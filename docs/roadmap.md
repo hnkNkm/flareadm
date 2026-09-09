@@ -75,6 +75,18 @@ api request
 - shell completion;
 - release builds for Linux/macOS/Windows.
 
+### Known limitations
+
+v0.1 known limitations:
+
+- structured DNS record types (CAA, SRV, TLSA, SSHFP, NAPTR, LOC, CERT, DNSKEY, DS, HTTPS,
+  SVCB, URI, SMIMEA, OPENPGPKEY) are rejected by `dns record create/update` with a pointer to
+  `api request`;
+- client-side `--query` is not implemented;
+- OS keychain credential storage is not implemented;
+- `--output table` is not supported for `dns record export`;
+- Windows cross-compilation is exercised in CI but not shipped by the Nix package.
+
 ## Later releases
 
 ### v0.2 — Zone and security administration

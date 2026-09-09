@@ -46,6 +46,24 @@ nix fmt
 nix flake check
 ```
 
+### Verified local commands
+
+Run Go tooling through the flake dev shell with `nix develop -c <cmd>`. The following command
+set is verified against the current tree:
+
+```bash
+nix develop -c go build ./...
+nix develop -c go vet ./...
+nix develop -c go test ./...
+nix develop -c golangci-lint run
+nix develop -c gofmt -l .
+nix fmt
+nix flake check
+```
+
+`go test ./...` runs fully offline: it exercises `httptest` fakes and makes no live Cloudflare
+calls.
+
 ## Nix package
 
 `packages.default` builds `flareadm` with `CGO_ENABLED=0`, `-trimpath` and stripped binaries.
@@ -59,11 +77,13 @@ nix build
 
 ### Bootstrap note
 
-The package definition requires `go.mod` and `go.sum`, which do not exist yet. Until they do,
-`nix build` fails with `go.mod file not found`.
+`go.mod` and `go.sum` are now committed, so `nix build` proceeds as far as fetching Go module
+dependencies — which is exactly where it stops. `flake.nix` still pins
+`vendorHash = pkgs.lib.fakeHash`, a deliberately invalid placeholder.
 
-`flake.nix` currently pins `vendorHash = lib.fakeHash`. Once `go.mod`/`go.sum` are committed,
-run `nix build` and replace `vendorHash` with the hash printed in the error message.
+Run `nix build` once: Nix fails and prints the correct dependency hash in the error message.
+Paste that hash into the `vendorHash` attribute in `flake.nix`, then run `nix build` again to
+produce `./result/bin/flareadm`.
 
 ## Release
 
@@ -81,6 +101,9 @@ windows/arm64
 Build configuration should prefer `CGO_ENABLED=0` where compatible. Cross-platform release
 artifacts are produced by GoReleaser (available in the dev shell); the Nix package builds
 native binaries for `x86_64-linux`, `aarch64-linux`, `x86_64-darwin` and `aarch64-darwin`.
+
+Cross-compilation: release artifacts are produced by GoReleaser; CI additionally runs
+`GOOS=windows GOARCH=amd64 go build ./...` to catch Windows-only build breaks before tagging.
 
 Distribution plan:
 
