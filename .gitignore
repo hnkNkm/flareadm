@@ -1,0 +1,31 @@
+# Build output
+/bin/
+/dist/
+/flareadm
+/flareadm.exe
+
+# Go
+*.test
+*.prof
+/coverage.*
+/vendor/
+
+# Nix
+/result
+/result-*
+.direnv/
+
+# Environment and local configuration
+.env
+.env.*
+!.env.example
+*.local.toml
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
