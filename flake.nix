@@ -33,8 +33,9 @@
 
           src = self;
 
-          # Replace with the hash reported by `nix build` once go.mod/go.sum exist.
-          vendorHash = pkgs.lib.fakeHash;
+          # Fixed-output hash of the go module fetch for the current go.mod/go.sum.
+          # Regenerate with `nix build` when the dependency set changes.
+          vendorHash = "sha256-MYznkGjhMRnHb5oPn1rO+uPHypndsU8bY6EP/qwGoD0=";
 
           ldflags = [
             "-s"
