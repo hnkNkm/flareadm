@@ -13,11 +13,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/hnkNkm/flareadm/internal/errors"
+	"github.com/hnkNkm/flareadm/internal/version"
 )
 
 // cliResult captures one CLI execution.
@@ -211,13 +213,28 @@ func cfgPath() string { return filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "flar
 func TestVersionLocalOnly(t *testing.T) {
 	newHome(t)
 	res := runCLI(t, "version")
-	if res.code != 0 || res.stdout != "0.1.0\n" {
-		t.Fatalf("code=%d stdout=%q", res.code, res.stdout)
+	if res.code != 0 {
+		t.Fatalf("version: code=%d stderr=%q", res.code, res.stderr)
 	}
 	if res.stderr != "" {
-		t.Fatalf("stderr=%q", res.stderr)
+		t.Fatalf("version stderr=%q", res.stderr)
+	}
+	// The version is legitimately overridable at link time (flake.nix and
+	// .goreleaser.yaml inject -X .../version.Version, and buildGoModule's
+	// checkPhase runs tests with those same ldflags), so only compare
+	// against the version linked into this test binary.
+	want := version.String()
+	if want == "" || !versionRE.MatchString(want) {
+		t.Fatalf("linked version %q does not look like a version", want)
+	}
+	if res.stdout != want+"\n" {
+		t.Fatalf("version stdout=%q, want %q", res.stdout, want+"\n")
 	}
 }
+
+// versionRE accepts plain and injected version strings (e.g. "0.1.0",
+// "0.1.0-unstable-dirty", "1.2.3-rc.1").
+var versionRE = regexp.MustCompile(`^[0-9][0-9A-Za-z.+\-~]*$`)
 
 func TestHelpLocalOnly(t *testing.T) {
 	newHome(t)
