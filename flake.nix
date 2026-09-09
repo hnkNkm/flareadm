@@ -10,7 +10,7 @@
     }:
     let
       # Canonical repository and Go module path. Keep in sync with go.mod.
-      repo = "github.com/hnk/flareadm";
+      repo = "github.com/hnkNkm/flareadm";
 
       version = "0.1.0-unstable-${self.shortRev or "dirty"}";
 
