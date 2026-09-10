@@ -41,6 +41,8 @@ sboms:
 signs:
   - cmd: cosign
     artifacts: checksum
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
     args:
       - sign-blob
       - --yes
