@@ -137,6 +137,8 @@ The scope is remote administration only.
 
 ### v0.4 — Zero Trust
 
+Shipped as **v0.4.0** (2026-09-10).
+
 Delivered:
 
 - tunnels (`list`/`get`/`create`/`update`/`delete`/`token`), tunnel connections
