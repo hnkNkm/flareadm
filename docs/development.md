@@ -125,6 +125,32 @@ Distribution plan:
 
 No package manager is required to execute a downloaded FlareADM binary.
 
+### Release process
+
+How a release is cut:
+
+1. Confirm `main` is green — CI runs build, vet, tests, race tests, lint, `govulncheck` and a
+   Windows cross-compile.
+2. Tag and push the tag:
+
+   ```bash
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
+   ```
+
+3. The tag triggers the release workflow, which runs GoReleaser to build the six target
+   archives and publishes a GitHub release containing those archives, a `checksums.txt`
+   SHA-256 file and Syft-generated SBOMs.
+4. The workflow then attaches a GitHub build-provenance attestation covering the archives and
+   the checksums file.
+
+How a consumer verifies a downloaded artifact:
+
+```bash
+gh attestation verify flareadm_<version>_<os>_<arch>.tar.gz --repo hnkNkm/flareadm
+sha256sum --check checksums.txt
+```
+
 ### Release security
 
 Releases SHOULD include:
