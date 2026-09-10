@@ -69,6 +69,17 @@ type apiStub struct {
 	mu      sync.Mutex
 	reqs    []recordedRequest
 	handler http.HandlerFunc
+	headers http.Header
+}
+
+// setHeader adds a response header applied to the next handler result.
+func (a *apiStub) setHeader(key, value string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.headers == nil {
+		a.headers = http.Header{}
+	}
+	a.headers.Set(key, value)
 }
 
 type recordedRequest struct {
@@ -77,6 +88,7 @@ type recordedRequest struct {
 	Query  string
 	Body   string
 	Auth   string
+	Host   string
 }
 
 func (a *apiStub) requests() []recordedRequest {
@@ -107,11 +119,21 @@ func newAPI(t *testing.T, handle func(method, path string, r recordedRequest) (i
 			Query:  r.URL.RawQuery,
 			Body:   string(body),
 			Auth:   r.Header.Get("Authorization"),
+			Host:   r.Host,
 		}
 		a.mu.Lock()
 		a.reqs = append(a.reqs, rec)
 		a.mu.Unlock()
 		status, resp := handle(r.Method, r.URL.Path, rec)
+		a.mu.Lock()
+		extra := a.headers
+		a.headers = nil
+		a.mu.Unlock()
+		for k, vals := range extra {
+			for _, v := range vals {
+				w.Header().Add(k, v)
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_, _ = fmt.Fprint(w, resp)
@@ -3036,5 +3058,968 @@ func TestPageRuleCRUD(t *testing.T) {
 	})
 	if res := runCLI(t, "page-rule", "get", "pr1", "--zone", zoneID, "--endpoint-url", api404.srv.URL); res.code != errors.CodeNotFound {
 		t.Fatalf("404: code=%d, want 5", res.code)
+	}
+}
+
+// ---- v0.3 slice 2: d1 / queue ---------------------------------------------
+
+func d1DB(id, name string) map[string]any {
+	return map[string]any{
+		"uuid": id, "name": name, "version": "production",
+		"num_tables": float64(2), "file_size": float64(2048),
+		"jurisdiction": "eu", "created_at": "2025-01-01T00:00:00Z",
+		"read_replication": map[string]any{"mode": "auto"},
+	}
+}
+
+func queueJSON(id, name string) map[string]any {
+	return map[string]any{
+		"queue_id": id, "queue_name": name,
+		"created_on": "2025-01-01T00:00:00Z", "modified_on": "2025-01-02T00:00:00Z",
+		"consumers_total_count": float64(1), "producers_total_count": float64(0),
+		"settings":  map[string]any{"delivery_delay": float64(0), "delivery_paused": false, "message_retention_period": float64(86400)},
+		"consumers": []any{map[string]any{"consumer_id": "c1", "type": "worker", "script_name": "my-worker"}},
+	}
+}
+
+func consumerJSON() map[string]any {
+	return map[string]any{"consumer_id": "c1", "type": "worker", "script_name": "my-worker", "dead_letter_queue": "dlq"}
+}
+
+// v04API serves D1 and Queues endpoints.
+func v04API(t *testing.T) *apiStub {
+	var stub *apiStub
+	stub = newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		d1base := "/accounts/" + accountID + "/d1/database"
+		qbase := "/accounts/" + accountID + "/queues"
+		switch {
+		// D1 databases
+		case method == "GET" && path == d1base:
+			if strings.Contains(r.Query, "page=2") {
+				return 200, envelope([]any{})
+			}
+			return 200, envelope([]any{d1DB("db1", "app-db")})
+		case method == "POST" && path == d1base:
+			return 200, envelope(d1DB("dbnew", "new-db"))
+		case method == "GET" && path == d1base+"/db1":
+			return 200, envelope(d1DB("db1", "app-db"))
+		case method == "PATCH" && path == d1base+"/db1":
+			return 200, envelope(d1DB("db1", "app-db"))
+		case method == "DELETE" && path == d1base+"/db1":
+			return 200, envelope(nil)
+		// D1 query / raw
+		case method == "POST" && path == d1base+"/db1/query":
+			return 200, envelope([]any{map[string]any{
+				"success": true,
+				"results": []any{map[string]any{"id": float64(1), "name": "alpha"}, map[string]any{"id": float64(2), "name": "beta"}},
+				"meta":    map[string]any{"rows_read": float64(2), "rows_written": float64(0), "changes": float64(0), "duration": float64(1.5)},
+			}})
+		case method == "POST" && path == d1base+"/db1/raw":
+			return 200, envelope([]any{map[string]any{
+				"success": true,
+				"results": []any{[]any{float64(1), "alpha"}, []any{float64(2), "beta"}},
+				"meta":    map[string]any{"rows_read": float64(2), "duration": float64(2)},
+			}})
+		// D1 export / import
+		case method == "POST" && path == d1base+"/db1/export":
+			return 200, envelope(map[string]any{
+				"status": "complete", "at_bookmark": "bm1",
+				"result": map[string]any{"filename": "dump.sql", "signed_url": "http://" + r.Host + "/dump.sql"},
+			})
+		case method == "GET" && path == "/dump.sql":
+			return 200, "SQL DUMP CONTENT"
+		case method == "POST" && path == d1base+"/db1/import":
+			if strings.Contains(r.Body, `"action":"init"`) {
+				return 200, envelope(map[string]any{
+					"status": "pending", "filename": "local.sql",
+					"upload_url": "http://" + r.Host + "/upload",
+				})
+			}
+			return 200, envelope(map[string]any{
+				"status": "running", "filename": "local.sql",
+				"result": map[string]any{"final_bookmark": "bm-final", "num_queries": float64(3)},
+			})
+		case method == "PUT" && path == "/upload":
+			if stub != nil {
+				stub.setHeader("ETag", `"etag-1"`)
+			}
+			return 200, ""
+		// D1 time travel
+		case method == "GET" && path == d1base+"/db1/time_travel/bookmark":
+			return 200, envelope(map[string]any{"bookmark": "bm0"})
+		case method == "POST" && path == d1base+"/db1/time_travel/restore":
+			return 200, envelope(map[string]any{"bookmark": "bm0", "previous_bookmark": "bm1", "message": "restored"})
+		// Queues
+		case method == "GET" && path == qbase:
+			return 200, envelope([]any{queueJSON("q1", "my-queue")})
+		case method == "POST" && path == qbase:
+			return 200, envelope(queueJSON("qnew", "new-queue"))
+		case method == "GET" && path == qbase+"/q1":
+			return 200, envelope(queueJSON("q1", "my-queue"))
+		case method == "PATCH" && path == qbase+"/q1":
+			return 200, envelope(queueJSON("q1", "my-queue"))
+		case method == "DELETE" && path == qbase+"/q1":
+			return 200, envelope(nil)
+		case method == "GET" && path == qbase+"/q1/metrics":
+			return 200, envelope(map[string]any{"backlog_bytes": float64(1024), "backlog_count": float64(7), "oldest_message_timestamp_ms": float64(1700000000000)})
+		case method == "GET" && path == qbase+"/q1/consumers":
+			return 200, envelope([]any{consumerJSON()})
+		case method == "POST" && path == qbase+"/q1/consumers":
+			return 200, envelope(consumerJSON())
+		case method == "GET" && path == qbase+"/q1/consumers/c1":
+			return 200, envelope(consumerJSON())
+		case method == "PATCH" && path == qbase+"/q1/consumers/c1":
+			return 200, envelope(consumerJSON())
+		case method == "DELETE" && path == qbase+"/q1/consumers/c1":
+			return 200, envelope(nil)
+		case method == "POST" && path == qbase+"/q1/messages":
+			return 200, envelope(map[string]any{"metadata": map[string]any{"id": "m1"}})
+		case method == "POST" && path == qbase+"/q1/messages/batch":
+			return 200, envelope(map[string]any{"metadata": map[string]any{"ids": []any{"m1", "m2"}}})
+		case method == "POST" && path == qbase+"/q1/messages/pull":
+			return 200, envelope(map[string]any{
+				"messages":              []any{map[string]any{"id": "m1", "attempts": float64(1), "body": "hello", "lease_id": "L1", "timestamp_ms": float64(1700000000000)}},
+				"message_backlog_count": float64(3),
+			})
+		case method == "POST" && path == qbase+"/q1/messages/peek":
+			return 200, envelope(map[string]any{
+				"messages": []any{map[string]any{"id": "m1", "attempts": float64(0), "body": "hello", "lease_id": ""}},
+			})
+		case method == "POST" && path == qbase+"/q1/messages/ack":
+			return 200, envelope(map[string]any{"ackCount": float64(1), "retryCount": float64(1)})
+		case method == "POST" && path == qbase+"/q1/messages/purge":
+			return 200, envelope(nil)
+		case method == "POST" && path == qbase+"/q1/purge":
+			return 200, envelope(queueJSON("q1", "my-queue"))
+		case method == "GET" && path == qbase+"/q1/purge":
+			return 200, envelope(map[string]any{"completed": "true", "started_at": "2025-01-01T00:00:00Z"})
+		}
+		s, b := apiErr(404, 7000, "not found")
+		return s, b
+	})
+	return stub
+}
+
+func TestD1DatabaseCRUD(t *testing.T) {
+	api := v04API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(args ...string) []string {
+		return append(args, "--account-id", accountID, "--endpoint-url", ep)
+	}
+
+	res := runCLI(t, base("d1", "database", "list", "--name", "app-db", "--json")...)
+	if res.code != 0 {
+		t.Fatalf("list: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if api.count() != 2 {
+		t.Fatalf("list requests = %d, want 2 (page pagination)", api.count())
+	}
+	if !strings.Contains(api.requests()[0].Query, "name=app-db") {
+		t.Fatalf("list query = %q", api.requests()[0].Query)
+	}
+	if !strings.Contains(res.stdout, `"uuid": "db1"`) || !strings.Contains(res.stdout, "app-db") {
+		t.Fatalf("list output = %s", res.stdout)
+	}
+
+	res = runCLI(t, base("d1", "database", "get", "db1")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "app-db") || !strings.Contains(res.stdout, "2.0 KiB") {
+		t.Fatalf("get: code=%d stdout=%q", res.code, res.stdout)
+	}
+
+	res = runCLI(t, base("d1", "database", "create", "--name", "new-db", "--location-hint", "weur",
+		"--jurisdiction", "eu", "--read-replication-mode", "auto")...)
+	if res.code != 0 {
+		t.Fatalf("create: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Method != "POST" || req.Path != "/accounts/"+accountID+"/d1/database" {
+		t.Fatalf("create request = %+v", req)
+	}
+	want := map[string]any{
+		"name": "new-db", "primary_location_hint": "weur", "jurisdiction": "eu",
+		"read_replication": map[string]any{"mode": "auto"},
+	}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, want) {
+		t.Fatalf("create body mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+
+	res = runCLI(t, base("d1", "database", "update", "db1", "--read-replication-mode", "disabled")...)
+	if res.code != 0 {
+		t.Fatalf("update: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "PATCH" {
+		t.Fatalf("update request = %+v", req)
+	}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, map[string]any{"read_replication": map[string]any{"mode": "disabled"}}) {
+		t.Fatalf("update body = %#v", got)
+	}
+
+	// dry-run create sends nothing
+	before := api.count()
+	res = runCLI(t, base("d1", "database", "create", "--name", "x", "--dry-run")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "Would create D1 database x") || api.count() != before {
+		t.Fatalf("dry-run create: code=%d stdout=%q requests=%d", res.code, res.stdout, api.count())
+	}
+
+	// validation
+	for _, args := range [][]string{
+		base("d1", "database", "create"),
+		base("d1", "database", "create", "--name", "x", "--location-hint", "moon"),
+		base("d1", "database", "create", "--name", "x", "--jurisdiction", "moon"),
+		base("d1", "database", "create", "--name", "x", "--read-replication-mode", "sometimes"),
+		base("d1", "database", "update", "db1"),
+		base("d1", "database", "update", "db1", "--read-replication-mode", "sometimes"),
+	} {
+		if res := runCLI(t, args...); res.code != errors.CodeInvalid {
+			t.Fatalf("%v: code=%d, want 2", args, res.code)
+		}
+	}
+
+	// delete guard rails
+	del := base("d1", "database", "delete", "db1")
+	if res := runCLI(t, del...); res.code != errors.CodeInvalid {
+		t.Fatalf("refusal: code=%d", res.code)
+	}
+	for _, r := range api.requests() {
+		if r.Method == "DELETE" {
+			t.Fatalf("DELETE without confirmation")
+		}
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--dry-run")...); res.code != 0 || !strings.Contains(res.stdout, "Would delete D1 database app-db") {
+		t.Fatalf("dry-run: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--yes")...); res.code != 0 {
+		t.Fatalf("delete: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if req := api.last(); req.Method != "DELETE" || req.Path != "/accounts/"+accountID+"/d1/database/db1" {
+		t.Fatalf("delete request = %+v", req)
+	}
+
+	// error mapping
+	api404 := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		s, b := apiErr(404, 7000, "database not found")
+		return s, b
+	})
+	if res := runCLI(t, "d1", "database", "get", "missing", "--account-id", accountID, "--endpoint-url", api404.srv.URL); res.code != errors.CodeNotFound {
+		t.Fatalf("404: code=%d, want 5", res.code)
+	}
+	api403 := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		s, b := apiErr(403, 9109, "forbidden")
+		return s, b
+	})
+	if res := runCLI(t, "d1", "database", "list", "--account-id", accountID, "--endpoint-url", api403.srv.URL); res.code != errors.CodePermission {
+		t.Fatalf("403: code=%d, want 4", res.code)
+	}
+}
+
+func TestD1QueryAndRaw(t *testing.T) {
+	api := v04API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(args ...string) []string {
+		return append(args, "--account-id", accountID, "--endpoint-url", ep)
+	}
+
+	res := runCLI(t, base("d1", "database", "query", "db1", "--sql", "SELECT id, name FROM users", "--params", "[1, \"a\"]")...)
+	if res.code != 0 {
+		t.Fatalf("query: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Method != "POST" || req.Path != "/accounts/"+accountID+"/d1/database/db1/query" {
+		t.Fatalf("query request = %+v", req)
+	}
+	want := map[string]any{"sql": "SELECT id, name FROM users", "params": []any{float64(1), "a"}}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, want) {
+		t.Fatalf("query body mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+	if !strings.Contains(res.stdout, "id") || !strings.Contains(res.stdout, "alpha") || !strings.Contains(res.stdout, "beta") {
+		t.Fatalf("query table = %s", res.stdout)
+	}
+
+	// json envelope keeps statement structure
+	res = runCLI(t, base("d1", "database", "query", "db1", "--sql", "SELECT 1", "--json")...)
+	if res.code != 0 || !strings.Contains(res.stdout, `"success": true`) || !strings.Contains(res.stdout, `"rows_read": 2`) {
+		t.Fatalf("query json: code=%d stdout=%q", res.code, res.stdout)
+	}
+
+	// --raw is byte-faithful
+	res = runCLI(t, base("d1", "database", "query", "db1", "--sql", "SELECT 1", "--raw")...)
+	if res.code != 0 {
+		t.Fatalf("raw: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if !strings.Contains(res.stdout, `"results"`) {
+		t.Fatalf("raw output = %s", res.stdout)
+	}
+
+	// batch pass-through
+	res = runCLI(t, base("d1", "database", "query", "db1", "--batch", `[{"sql":"SELECT 1"},{"sql":"SELECT 2"}]`)...)
+	if res.code != 0 {
+		t.Fatalf("batch: code=%d stderr=%q", res.code, res.stderr)
+	}
+	got := decodeRequestBody(t, api.last().Body)
+	if _, ok := got["batch"]; !ok || got["sql"] != nil {
+		t.Fatalf("batch body = %#v", got)
+	}
+
+	// raw command prints positional columns
+	res = runCLI(t, base("d1", "database", "raw", "db1", "--sql", "SELECT id, name FROM users")...)
+	if res.code != 0 {
+		t.Fatalf("raw command: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if !strings.Contains(res.stdout, "C1") || !strings.Contains(res.stdout, "C2") || !strings.Contains(res.stdout, "alpha") {
+		t.Fatalf("raw table = %s", res.stdout)
+	}
+
+	// validation
+	for _, args := range [][]string{
+		base("d1", "database", "query", "db1"),
+		base("d1", "database", "query", "db1", "--params", "[1]"),
+		base("d1", "database", "query", "db1", "--sql", "SELECT 1", "--params", "not-json"),
+		base("d1", "database", "raw", "db1", "--batch", "not-json"),
+	} {
+		if res := runCLI(t, args...); res.code != errors.CodeInvalid {
+			t.Fatalf("%v: code=%d, want 2 (stderr=%q)", args, res.code, res.stderr)
+		}
+	}
+
+	// 404 mapping
+	api404 := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		s, b := apiErr(404, 7000, "database not found")
+		return s, b
+	})
+	if res := runCLI(t, "d1", "database", "query", "db1", "--sql", "SELECT 1", "--account-id", accountID, "--endpoint-url", api404.srv.URL); res.code != errors.CodeNotFound {
+		t.Fatalf("404: code=%d, want 5", res.code)
+	}
+}
+
+func TestD1ExportAndImport(t *testing.T) {
+	api := v04API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(args ...string) []string {
+		return append(args, "--account-id", accountID, "--endpoint-url", ep)
+	}
+
+	// export
+	res := runCLI(t, base("d1", "database", "export", "db1", "--bookmark", "bm1")...)
+	if res.code != 0 {
+		t.Fatalf("export: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Method != "POST" || req.Path != "/accounts/"+accountID+"/d1/database/db1/export" {
+		t.Fatalf("export request = %+v", req)
+	}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, map[string]any{"output_format": "polling", "current_bookmark": "bm1"}) {
+		t.Fatalf("export body = %#v", got)
+	}
+	if !strings.Contains(res.stdout, "complete") || !strings.Contains(res.stdout, "dump.sql") {
+		t.Fatalf("export output = %s", res.stdout)
+	}
+	if res := runCLI(t, base("d1", "database", "export", "db1", "--output-format", "csv")...); res.code != errors.CodeInvalid {
+		t.Fatalf("bad format: code=%d", res.code)
+	}
+
+	// export --download
+	dl := filepath.Join(t.TempDir(), "dump.sql")
+	res = runCLI(t, base("d1", "database", "export", "db1", "--download", dl)...)
+	if res.code != 0 {
+		t.Fatalf("export download: code=%d stderr=%q", res.code, res.stderr)
+	}
+	content, err := os.ReadFile(dl)
+	if err != nil || string(content) != "SQL DUMP CONTENT" {
+		t.Fatalf("download content = %q err=%v", content, err)
+	}
+
+	// single import step
+	res = runCLI(t, base("d1", "database", "import", "db1", "--action", "ingest", "--filename", "local.sql",
+		"--etag", "e1", "--bookmark", "bm1")...)
+	if res.code != 0 {
+		t.Fatalf("import step: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "POST" || req.Path != "/accounts/"+accountID+"/d1/database/db1/import" {
+		t.Fatalf("import request = %+v", req)
+	}
+	want := map[string]any{"action": "ingest", "filename": "local.sql", "etag": "e1", "current_bookmark": "bm1"}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, want) {
+		t.Fatalf("import body mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+	if !strings.Contains(res.stdout, "bm-final") {
+		t.Fatalf("import output = %s", res.stdout)
+	}
+	if res := runCLI(t, base("d1", "database", "import", "db1", "--action", "bogus")...); res.code != errors.CodeInvalid {
+		t.Fatalf("bad action: code=%d", res.code)
+	}
+
+	// full --file flow (init -> upload -> ingest)
+	sqlFile := filepath.Join(t.TempDir(), "local.sql")
+	_ = os.WriteFile(sqlFile, []byte("CREATE TABLE t (id INT);"), 0o600)
+	api.mu.Lock()
+	api.reqs = nil
+	api.mu.Unlock()
+	res = runCLI(t, base("d1", "database", "import", "db1", "--file", "@"+sqlFile)...)
+	if res.code != 0 {
+		t.Fatalf("import flow: code=%d stderr=%q", res.code, res.stderr)
+	}
+	reqs := api.requests()
+	if len(reqs) != 3 {
+		t.Fatalf("import flow requests = %d, want 3 (init, upload, ingest): %+v", len(reqs), reqs)
+	}
+	if !strings.Contains(reqs[0].Body, `"action":"init"`) || !strings.Contains(reqs[0].Body, `"filename":"local.sql"`) {
+		t.Fatalf("init body = %q", reqs[0].Body)
+	}
+	if reqs[1].Method != "PUT" || !strings.Contains(reqs[1].Body, "CREATE TABLE t") {
+		t.Fatalf("upload request = %+v", reqs[1])
+	}
+	if !strings.Contains(reqs[2].Body, `"action":"ingest"`) || !strings.Contains(reqs[2].Body, `"etag":"`) {
+		t.Fatalf("ingest body = %q", reqs[2].Body)
+	}
+	for _, step := range []string{"import: init ok", "import: uploaded", "import: ingest ok"} {
+		if !strings.Contains(res.stderr, step) {
+			t.Fatalf("step %q missing from stderr: %q", step, res.stderr)
+		}
+	}
+
+	// --wait with a failing poll exits 9 and names the final bookmark
+	apiFail := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		switch {
+		case method == "POST" && strings.HasSuffix(path, "/import"):
+			if strings.Contains(r.Body, `"action":"init"`) {
+				return 200, envelope(map[string]any{"status": "pending", "filename": "local.sql", "upload_url": "http://" + r.Host + "/upload"})
+			}
+			if strings.Contains(r.Body, `"action":"ingest"`) {
+				return 200, envelope(map[string]any{"status": "running", "result": map[string]any{"final_bookmark": "bm-final"}})
+			}
+			s, b := apiErr(500, 0, "poll exploded")
+			return s, b
+		case method == "PUT" && path == "/upload":
+			return 200, ""
+		}
+		s, b := apiErr(404, 0, "nope")
+		return s, b
+	})
+	res = runCLI(t, "d1", "database", "import", "db1", "--file", "@"+sqlFile, "--wait",
+		"--account-id", accountID, "--endpoint-url", apiFail.srv.URL)
+	if res.code != errors.CodePartial {
+		t.Fatalf("wait failure: code=%d, want 9 (stderr=%q)", res.code, res.stderr)
+	}
+	if !strings.Contains(res.stderr, "bm-final") {
+		t.Fatalf("partial error must name the final bookmark: %q", res.stderr)
+	}
+
+	// validation
+	for _, args := range [][]string{
+		base("d1", "database", "import", "db1"),
+		base("d1", "database", "import", "db1", "--file", "@"+sqlFile, "--action", "init"),
+		base("d1", "database", "import", "db1", "--action", "init", "--wait"),
+		base("d1", "database", "import", "db1", "--file", "@/no/such/file.sql"),
+	} {
+		if res := runCLI(t, args...); res.code != errors.CodeInvalid {
+			t.Fatalf("%v: code=%d, want 2 (stderr=%q)", args, res.code, res.stderr)
+		}
+	}
+}
+
+func TestD1TimeTravel(t *testing.T) {
+	api := v04API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(args ...string) []string {
+		return append(args, "--account-id", accountID, "--endpoint-url", ep)
+	}
+
+	res := runCLI(t, base("d1", "database", "bookmark", "db1")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "bm0") {
+		t.Fatalf("bookmark: code=%d stdout=%q", res.code, res.stdout)
+	}
+	req := api.last()
+	if req.Method != "GET" || req.Path != "/accounts/"+accountID+"/d1/database/db1/time_travel/bookmark" || req.Query != "" {
+		t.Fatalf("bookmark request = %+v", req)
+	}
+
+	res = runCLI(t, base("d1", "database", "bookmark", "db1", "--timestamp", "2026-01-02T15:04:05Z")...)
+	if res.code != 0 {
+		t.Fatalf("bookmark ts: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if !strings.Contains(api.last().Query, "timestamp=2026-01-02T15%3A04%3A05Z") {
+		t.Fatalf("bookmark timestamp query = %q", api.last().Query)
+	}
+
+	// restore guard rails
+	res = runCLI(t, base("d1", "database", "restore", "db1", "--bookmark", "bm0")...)
+	if res.code != errors.CodeInvalid {
+		t.Fatalf("refusal: code=%d", res.code)
+	}
+	before := api.count()
+	res = runCLI(t, base("d1", "database", "restore", "db1", "--bookmark", "bm0", "--dry-run")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "Would restore D1 database db1 to bm0") || api.count() != before {
+		t.Fatalf("dry-run: code=%d stdout=%q", res.code, res.stdout)
+	}
+	res = runCLI(t, base("d1", "database", "restore", "db1", "--bookmark", "bm0", "--yes")...)
+	if res.code != 0 {
+		t.Fatalf("restore: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "POST" || !strings.Contains(req.Query, "bookmark=bm0") {
+		t.Fatalf("restore request = %+v", req)
+	}
+	for _, args := range [][]string{
+		base("d1", "database", "restore", "db1"),
+		base("d1", "database", "restore", "db1", "--bookmark", "bm0", "--timestamp", "2026-01-02T15:04:05Z"),
+		base("d1", "database", "bookmark", "db1", "--timestamp", "not-a-time"),
+	} {
+		if res := runCLI(t, args...); res.code != errors.CodeInvalid {
+			t.Fatalf("%v: code=%d, want 2", args, res.code)
+		}
+	}
+}
+
+func TestQueueCRUD(t *testing.T) {
+	api := v04API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(args ...string) []string {
+		return append(args, "--account-id", accountID, "--endpoint-url", ep)
+	}
+
+	res := runCLI(t, base("queue", "list", "--json")...)
+	if res.code != 0 {
+		t.Fatalf("list: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if !strings.Contains(res.stdout, `"queue_name": "my-queue"`) {
+		t.Fatalf("list output = %s", res.stdout)
+	}
+	if api.last().Path != "/accounts/"+accountID+"/queues" {
+		t.Fatalf("list path = %q", api.last().Path)
+	}
+
+	res = runCLI(t, base("queue", "get", "q1")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "my-queue") {
+		t.Fatalf("get: code=%d stdout=%q", res.code, res.stdout)
+	}
+
+	res = runCLI(t, base("queue", "create", "--name", "new-queue")...)
+	if res.code != 0 {
+		t.Fatalf("create: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Method != "POST" || req.Path != "/accounts/"+accountID+"/queues" {
+		t.Fatalf("create request = %+v", req)
+	}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, map[string]any{"queue_name": "new-queue"}) {
+		t.Fatalf("create body = %#v", got)
+	}
+	if res := runCLI(t, base("queue", "create")...); res.code != errors.CodeInvalid {
+		t.Fatalf("missing name: code=%d", res.code)
+	}
+
+	res = runCLI(t, base("queue", "update", "q1", "--delivery-delay", "60", "--delivery-paused")...)
+	if res.code != 0 {
+		t.Fatalf("update: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "PATCH" {
+		t.Fatalf("update request = %+v", req)
+	}
+	want := map[string]any{"queue": map[string]any{"settings": map[string]any{"delivery_delay": float64(60), "delivery_paused": true}}}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, want) {
+		t.Fatalf("update body mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+	if res := runCLI(t, base("queue", "update", "q1")...); res.code != errors.CodeInvalid {
+		t.Fatalf("empty update: code=%d", res.code)
+	}
+
+	res = runCLI(t, base("queue", "metrics", "q1")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "1024") || !strings.Contains(res.stdout, "7") {
+		t.Fatalf("metrics: code=%d stdout=%q", res.code, res.stdout)
+	}
+
+	// delete guard rails
+	del := base("queue", "delete", "q1")
+	if res := runCLI(t, del...); res.code != errors.CodeInvalid {
+		t.Fatalf("refusal: code=%d", res.code)
+	}
+	for _, r := range api.requests() {
+		if r.Method == "DELETE" {
+			t.Fatalf("DELETE without confirmation")
+		}
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--dry-run")...); res.code != 0 || !strings.Contains(res.stdout, "Would delete queue my-queue") {
+		t.Fatalf("dry-run: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--yes")...); res.code != 0 {
+		t.Fatalf("delete: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if req := api.last(); req.Method != "DELETE" || req.Path != "/accounts/"+accountID+"/queues/q1" {
+		t.Fatalf("delete request = %+v", req)
+	}
+
+	// error mapping
+	api404 := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		s, b := apiErr(404, 7000, "queue not found")
+		return s, b
+	})
+	if res := runCLI(t, "queue", "get", "q1", "--account-id", accountID, "--endpoint-url", api404.srv.URL); res.code != errors.CodeNotFound {
+		t.Fatalf("404: code=%d, want 5", res.code)
+	}
+	api403 := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		s, b := apiErr(403, 9109, "forbidden")
+		return s, b
+	})
+	if res := runCLI(t, "queue", "list", "--account-id", accountID, "--endpoint-url", api403.srv.URL); res.code != errors.CodePermission {
+		t.Fatalf("403: code=%d, want 4", res.code)
+	}
+	// Missing account scope with several accessible accounts -> exit 2.
+	apiAmbig := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		if method == "GET" && path == "/accounts" {
+			return 200, envelope([]any{
+				map[string]any{"id": accountID, "name": "one"},
+				map[string]any{"id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "name": "two"},
+			})
+		}
+		s, b := apiErr(404, 0, "nope")
+		return s, b
+	})
+	res = runCLI(t, "queue", "list", "--endpoint-url", apiAmbig.srv.URL)
+	if res.code != errors.CodeInvalid {
+		t.Fatalf("ambiguous account: code=%d, want 2 (stderr=%q)", res.code, res.stderr)
+	}
+	if !strings.Contains(res.stderr, "one ("+accountID+")") {
+		t.Fatalf("ambiguous message = %q", res.stderr)
+	}
+}
+
+func TestQueueConsumerCRUD(t *testing.T) {
+	api := v04API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(args ...string) []string {
+		return append(args, "--account-id", accountID, "--endpoint-url", ep)
+	}
+
+	res := runCLI(t, base("queue", "consumer", "list", "q1")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "my-worker") {
+		t.Fatalf("list: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if api.last().Path != "/accounts/"+accountID+"/queues/q1/consumers" {
+		t.Fatalf("list path = %q", api.last().Path)
+	}
+
+	res = runCLI(t, base("queue", "consumer", "get", "q1", "c1")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "c1") {
+		t.Fatalf("get: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if api.last().Path != "/accounts/"+accountID+"/queues/q1/consumers/c1" {
+		t.Fatalf("get path = %q", api.last().Path)
+	}
+
+	res = runCLI(t, base("queue", "consumer", "create", "q1", "--type", "worker", "--script", "my-worker", "--dead-letter-queue", "dlq")...)
+	if res.code != 0 {
+		t.Fatalf("create: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Method != "POST" || req.Path != "/accounts/"+accountID+"/queues/q1/consumers" {
+		t.Fatalf("create request = %+v", req)
+	}
+	want := map[string]any{"type": "worker", "script_name": "my-worker", "dead_letter_queue": "dlq"}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, want) {
+		t.Fatalf("create body mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+
+	// http_pull with settings
+	res = runCLI(t, base("queue", "consumer", "create", "q1", "--type", "http_pull", "--settings", `{"batch_size":10}`)...)
+	if res.code != 0 {
+		t.Fatalf("http_pull create: code=%d stderr=%q", res.code, res.stderr)
+	}
+	got := decodeRequestBody(t, api.last().Body)
+	if got["type"] != "http_pull" || !reflect.DeepEqual(got["settings"], map[string]any{"batch_size": float64(10)}) {
+		t.Fatalf("http_pull body = %#v", got)
+	}
+
+	// validation
+	for _, args := range [][]string{
+		base("queue", "consumer", "create", "q1"),
+		base("queue", "consumer", "create", "q1", "--type", "worker"),
+		base("queue", "consumer", "create", "q1", "--type", "bogus"),
+		base("queue", "consumer", "create", "q1", "--type", "worker", "--script", "s", "--settings", "[1]"),
+		base("queue", "consumer", "update", "q1", "c1"),
+	} {
+		if res := runCLI(t, args...); res.code != errors.CodeInvalid {
+			t.Fatalf("%v: code=%d, want 2 (stderr=%q)", args, res.code, res.stderr)
+		}
+	}
+
+	// update
+	res = runCLI(t, base("queue", "consumer", "update", "q1", "c1", "--script", "other-worker")...)
+	if res.code != 0 {
+		t.Fatalf("update: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "PATCH" {
+		t.Fatalf("update request = %+v", req)
+	}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, map[string]any{"script_name": "other-worker"}) {
+		t.Fatalf("update body = %#v", got)
+	}
+
+	// delete guard rails
+	del := base("queue", "consumer", "delete", "q1", "c1")
+	if res := runCLI(t, del...); res.code != errors.CodeInvalid {
+		t.Fatalf("refusal: code=%d", res.code)
+	}
+	for _, r := range api.requests() {
+		if r.Method == "DELETE" {
+			t.Fatalf("DELETE without confirmation")
+		}
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--dry-run")...); res.code != 0 || !strings.Contains(res.stdout, "Would delete consumer c1") {
+		t.Fatalf("dry-run: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--yes")...); res.code != 0 {
+		t.Fatalf("delete: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if req := api.last(); req.Method != "DELETE" || req.Path != "/accounts/"+accountID+"/queues/q1/consumers/c1" {
+		t.Fatalf("delete request = %+v", req)
+	}
+}
+
+func TestQueueMessages(t *testing.T) {
+	api := v04API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(args ...string) []string {
+		return append(args, "--account-id", accountID, "--endpoint-url", ep)
+	}
+
+	// push text
+	res := runCLI(t, base("queue", "message", "push", "q1", "--body", "hello")...)
+	if res.code != 0 {
+		t.Fatalf("push text: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Method != "POST" || req.Path != "/accounts/"+accountID+"/queues/q1/messages" {
+		t.Fatalf("push request = %+v", req)
+	}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, map[string]any{"body": "hello", "content_type": "text"}) {
+		t.Fatalf("push text body = %#v", got)
+	}
+	if !strings.Contains(res.stdout, "m1") {
+		t.Fatalf("push output = %s", res.stdout)
+	}
+
+	// push json (parsed value, not a string)
+	res = runCLI(t, base("queue", "message", "push", "q1", "--body", `{"k":"v"}`, "--content-type", "json", "--delay-seconds", "5")...)
+	if res.code != 0 {
+		t.Fatalf("push json: code=%d stderr=%q", res.code, res.stderr)
+	}
+	want := map[string]any{"body": map[string]any{"k": "v"}, "content_type": "json", "delay_seconds": float64(5)}
+	if got := decodeRequestBody(t, api.last().Body); !reflect.DeepEqual(got, want) {
+		t.Fatalf("push json body mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+
+	// bulk push
+	res = runCLI(t, base("queue", "message", "push", "q1", "--bulk", `[{"body":"a","content_type":"text"}]`)...)
+	if res.code != 0 {
+		t.Fatalf("bulk: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if api.last().Path != "/accounts/"+accountID+"/queues/q1/messages/batch" {
+		t.Fatalf("bulk path = %q", api.last().Path)
+	}
+
+	// validation
+	for _, args := range [][]string{
+		base("queue", "message", "push", "q1"),
+		base("queue", "message", "push", "q1", "--body", "x", "--bulk", "[]"),
+		base("queue", "message", "push", "q1", "--body", "not-json", "--content-type", "json"),
+		base("queue", "message", "push", "q1", "--body", "x", "--content-type", "xml"),
+		base("queue", "message", "push", "q1", "--bulk", `{"not":"array"}`),
+	} {
+		if res := runCLI(t, args...); res.code != errors.CodeInvalid {
+			t.Fatalf("%v: code=%d, want 2 (stderr=%q)", args, res.code, res.stderr)
+		}
+	}
+
+	// pull
+	res = runCLI(t, base("queue", "message", "pull", "q1", "--batch-size", "5", "--visibility-timeout-ms", "1000")...)
+	if res.code != 0 {
+		t.Fatalf("pull: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Path != "/accounts/"+accountID+"/queues/q1/messages/pull" {
+		t.Fatalf("pull path = %q", req.Path)
+	}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, map[string]any{"batch_size": float64(5), "visibility_timeout_ms": float64(1000)}) {
+		t.Fatalf("pull body = %#v", got)
+	}
+	if !strings.Contains(res.stdout, "m1") || !strings.Contains(res.stdout, "L1") {
+		t.Fatalf("pull output = %s", res.stdout)
+	}
+
+	// peek
+	res = runCLI(t, base("queue", "message", "peek", "q1")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "hello") {
+		t.Fatalf("peek: code=%d stdout=%q", res.code, res.stdout)
+	}
+
+	// ack
+	res = runCLI(t, base("queue", "message", "ack", "q1", "--ack", "L1", "--retry", "L2")...)
+	if res.code != 0 {
+		t.Fatalf("ack: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if got := decodeRequestBody(t, api.last().Body); !reflect.DeepEqual(got, map[string]any{"acks": []any{"L1"}, "retries": []any{"L2"}}) {
+		t.Fatalf("ack body = %#v", got)
+	}
+	if !strings.Contains(res.stdout, "ACKED") {
+		t.Fatalf("ack output = %s", res.stdout)
+	}
+	if res := runCLI(t, base("queue", "message", "ack", "q1")...); res.code != errors.CodeInvalid {
+		t.Fatalf("ack without ids: code=%d", res.code)
+	}
+
+	// message delete guard rails
+	del := base("queue", "message", "delete", "q1", "--ref", "L1")
+	if res := runCLI(t, del...); res.code != errors.CodeInvalid {
+		t.Fatalf("refusal: code=%d", res.code)
+	}
+	for _, r := range api.requests() {
+		if r.Path == "/accounts/"+accountID+"/queues/q1/messages/purge" {
+			t.Fatalf("purge sent without confirmation")
+		}
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--dry-run")...); res.code != 0 || !strings.Contains(res.stdout, "Would delete 1 message(s)") {
+		t.Fatalf("dry-run: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--yes")...); res.code != 0 {
+		t.Fatalf("delete: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if got := decodeRequestBody(t, api.last().Body); !reflect.DeepEqual(got, map[string]any{"refs": []any{"L1"}}) {
+		t.Fatalf("purge body = %#v", got)
+	}
+	if res := runCLI(t, base("queue", "message", "delete", "q1")...); res.code != errors.CodeInvalid {
+		t.Fatalf("delete without refs: code=%d", res.code)
+	}
+}
+
+func TestQueuePurge(t *testing.T) {
+	api := v04API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(args ...string) []string {
+		return append(args, "--account-id", accountID, "--endpoint-url", ep)
+	}
+
+	start := base("queue", "purge", "q1")
+	res := runCLI(t, start...)
+	if res.code != errors.CodeInvalid {
+		t.Fatalf("refusal: code=%d", res.code)
+	}
+	for _, r := range api.requests() {
+		if r.Path == "/accounts/"+accountID+"/queues/q1/purge" && r.Method == "POST" {
+			t.Fatalf("purge started without confirmation")
+		}
+	}
+	before := api.count()
+	res = runCLI(t, append(append([]string{}, start...), "--dry-run")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "Would purge queue q1") || api.count() != before {
+		t.Fatalf("dry-run: code=%d stdout=%q", res.code, res.stdout)
+	}
+	res = runCLI(t, append(append([]string{}, start...), "--yes", "--permanent")...)
+	if res.code != 0 {
+		t.Fatalf("purge: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Method != "POST" || req.Path != "/accounts/"+accountID+"/queues/q1/purge" {
+		t.Fatalf("purge request = %+v", req)
+	}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, map[string]any{"delete_messages_permanently": true}) {
+		t.Fatalf("purge body = %#v", got)
+	}
+
+	res = runCLI(t, base("queue", "purge", "get", "q1")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "true") {
+		t.Fatalf("purge status: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if api.last().Method != "GET" {
+		t.Fatalf("purge status method = %s", api.last().Method)
+	}
+}
+
+func TestPayloadHygiene(t *testing.T) {
+	// A hostile API echoes the request body back in its error message.
+	echoStub := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		s, b := apiErr(400, 1004, "bad request: "+r.Body)
+		return s, b
+	})
+	setToken(t, "tok")
+	newHome(t)
+	ep := echoStub.srv.URL
+
+	cases := []struct {
+		name   string
+		marker string
+		args   []string
+	}{
+		{"d1 query params", "S3CR3T-D1-PARAMS",
+			[]string{"d1", "database", "query", "db1", "--sql", "SELECT ?",
+				"--params", `["S3CR3T-D1-PARAMS"]`, "--account-id", accountID, "--debug", "--endpoint-url", ep}},
+		{"d1 batch payload", "S3CR3T-D1-BATCH",
+			[]string{"d1", "database", "query", "db1",
+				"--batch", `[{"sql":"SELECT 'S3CR3T-D1-BATCH'"}]`, "--account-id", accountID, "--debug", "--endpoint-url", ep}},
+		{"queue message body", "S3CR3T-QUEUE-BODY",
+			[]string{"queue", "message", "push", "q1", "--body", "S3CR3T-QUEUE-BODY",
+				"--account-id", accountID, "--debug", "--endpoint-url", ep}},
+		{"queue bulk payload", "S3CR3T-QUEUE-BULK",
+			[]string{"queue", "message", "push", "q1", "--bulk", `[{"body":"S3CR3T-QUEUE-BULK","content_type":"text"}]`,
+				"--account-id", accountID, "--debug", "--endpoint-url", ep}},
+		{"kv value", "S3CR3T-KV-VALUE",
+			[]string{"kv", "key", "put", "k1", "--namespace", "ns1", "--value", "S3CR3T-KV-VALUE",
+				"--account-id", accountID, "--debug", "--endpoint-url", ep}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := runCLI(t, tc.args...)
+			if res.code != errors.CodeInvalid {
+				t.Fatalf("code=%d, want 2 (stderr=%q)", res.code, res.stderr)
+			}
+			if !strings.Contains(res.stderr, "debug:") {
+				t.Fatalf("expected debug diagnostics to be active: %q", res.stderr)
+			}
+			if strings.Contains(res.stdout, tc.marker) || strings.Contains(res.stderr, tc.marker) {
+				t.Fatalf("payload leaked:\nstdout=%q\nstderr=%q", res.stdout, res.stderr)
+			}
+		})
+	}
+
+	// D1 import file bytes: the signed upload endpoint echoes the file.
+	fileStub := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		switch {
+		case method == "POST" && strings.HasSuffix(path, "/import"):
+			return 200, envelope(map[string]any{"status": "pending", "filename": "dump.sql", "upload_url": "http://" + r.Host + "/upload"})
+		case method == "PUT" && path == "/upload":
+			s, b := apiErr(400, 1004, "echo: "+r.Body)
+			return s, b
+		}
+		s, b := apiErr(404, 0, "nope")
+		return s, b
+	})
+	sqlFile := filepath.Join(t.TempDir(), "dump.sql")
+	_ = os.WriteFile(sqlFile, []byte("CREATE TABLE t (s TEXT DEFAULT 'S3CR3T-DUMP-BYTES');"), 0o600)
+	res := runCLI(t, "d1", "database", "import", "db1", "--file", "@"+sqlFile, "--debug",
+		"--account-id", accountID, "--endpoint-url", fileStub.srv.URL)
+	if res.code == 0 {
+		t.Fatalf("expected the upload failure to fail the command")
+	}
+	if strings.Contains(res.stdout, "S3CR3T-DUMP-BYTES") || strings.Contains(res.stderr, "S3CR3T-DUMP-BYTES") {
+		t.Fatalf("import file bytes leaked:\nstdout=%q\nstderr=%q", res.stdout, res.stderr)
 	}
 }

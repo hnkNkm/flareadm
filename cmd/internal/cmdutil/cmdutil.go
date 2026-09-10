@@ -85,3 +85,21 @@ func ClientAndScope(ctx context.Context, rt *app.Runtime) (*cloudflare.Client, c
 	}
 	return client, cloudflare.RulesetScope{ZoneID: zoneID}, nil
 }
+
+// ParseJSONObjectOrArray resolves a flag (inline or @file) that may hold
+// either a JSON object or a JSON array, returning the raw JSON.
+func ParseJSONObjectOrArray(flag, v string) (json.RawMessage, error) {
+	text, err := ValueOrFile(flag, v)
+	if err != nil {
+		return nil, err
+	}
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[") {
+		return nil, errors.Usage("--%s must be a JSON object or array", flag)
+	}
+	var probe any
+	if err := json.Unmarshal([]byte(trimmed), &probe); err != nil {
+		return nil, errors.Usage("--%s is not valid JSON: %v", flag, err)
+	}
+	return json.RawMessage(trimmed), nil
+}

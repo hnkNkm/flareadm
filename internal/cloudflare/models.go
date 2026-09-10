@@ -250,3 +250,144 @@ type PageRule struct {
 	CreatedOn  string          `json:"created_on,omitempty" yaml:"created_on,omitempty"`
 	ModifiedOn string          `json:"modified_on,omitempty" yaml:"modified_on,omitempty"`
 }
+
+// ---- v0.3 slice 2: D1 and Queues -----------------------------------------
+
+// D1Database is the normalized D1 database model.
+type D1Database struct {
+	UUID            string          `json:"uuid" yaml:"uuid"`
+	Name            string          `json:"name" yaml:"name"`
+	Version         string          `json:"version,omitempty" yaml:"version,omitempty"`
+	NumTables       float64         `json:"num_tables,omitempty" yaml:"num_tables,omitempty"`
+	FileSize        float64         `json:"file_size,omitempty" yaml:"file_size,omitempty"`
+	Jurisdiction    string          `json:"jurisdiction,omitempty" yaml:"jurisdiction,omitempty"`
+	ReadReplication json.RawMessage `json:"read_replication,omitempty" yaml:"read_replication,omitempty"`
+	CreatedAt       string          `json:"created_at,omitempty" yaml:"created_at,omitempty"`
+}
+
+// D1StatementResult is one statement result of a D1 query.
+type D1StatementResult struct {
+	Success bool             `json:"success" yaml:"success"`
+	Results []map[string]any `json:"results,omitempty" yaml:"results,omitempty"`
+	Meta    *D1Meta          `json:"meta,omitempty" yaml:"meta,omitempty"`
+}
+
+// D1Meta is the per-statement execution metadata.
+type D1Meta struct {
+	ChangedDB       bool    `json:"changed_db,omitempty" yaml:"changed_db,omitempty"`
+	Changes         float64 `json:"changes,omitempty" yaml:"changes,omitempty"`
+	Duration        float64 `json:"duration,omitempty" yaml:"duration,omitempty"`
+	LastRowID       float64 `json:"last_row_id,omitempty" yaml:"last_row_id,omitempty"`
+	RowsRead        float64 `json:"rows_read,omitempty" yaml:"rows_read,omitempty"`
+	RowsWritten     float64 `json:"rows_written,omitempty" yaml:"rows_written,omitempty"`
+	ServedByColo    string  `json:"served_by_colo,omitempty" yaml:"served_by_colo,omitempty"`
+	ServedByPrimary bool    `json:"served_by_primary,omitempty" yaml:"served_by_primary,omitempty"`
+	SizeAfter       float64 `json:"size_after,omitempty" yaml:"size_after,omitempty"`
+}
+
+// D1RawStatementResult is one statement result of a D1 raw query (rows are
+// positional arrays).
+type D1RawStatementResult struct {
+	Success bool    `json:"success" yaml:"success"`
+	Results [][]any `json:"results,omitempty" yaml:"results,omitempty"`
+	Meta    *D1Meta `json:"meta,omitempty" yaml:"meta,omitempty"`
+}
+
+// D1ExportResult is the D1 export job response.
+type D1ExportResult struct {
+	Status     string   `json:"status,omitempty" yaml:"status,omitempty"`
+	AtBookmark string   `json:"at_bookmark,omitempty" yaml:"at_bookmark,omitempty"`
+	Filename   string   `json:"filename,omitempty" yaml:"filename,omitempty"`
+	SignedURL  string   `json:"signed_url,omitempty" yaml:"signed_url,omitempty"`
+	Messages   []string `json:"messages,omitempty" yaml:"messages,omitempty"`
+	Error      string   `json:"error,omitempty" yaml:"error,omitempty"`
+}
+
+// D1ImportResult is the D1 import step response.
+type D1ImportResult struct {
+	Status        string   `json:"status,omitempty" yaml:"status,omitempty"`
+	Filename      string   `json:"filename,omitempty" yaml:"filename,omitempty"`
+	UploadURL     string   `json:"upload_url,omitempty" yaml:"upload_url,omitempty"`
+	FinalBookmark string   `json:"final_bookmark,omitempty" yaml:"final_bookmark,omitempty"`
+	NumQueries    float64  `json:"num_queries,omitempty" yaml:"num_queries,omitempty"`
+	Messages      []string `json:"messages,omitempty" yaml:"messages,omitempty"`
+	Error         string   `json:"error,omitempty" yaml:"error,omitempty"`
+}
+
+// D1Bookmark is the time-travel bookmark response.
+type D1Bookmark struct {
+	Bookmark string `json:"bookmark" yaml:"bookmark"`
+}
+
+// D1RestoreResult is the time-travel restore response.
+type D1RestoreResult struct {
+	Bookmark         string `json:"bookmark,omitempty" yaml:"bookmark,omitempty"`
+	PreviousBookmark string `json:"previous_bookmark,omitempty" yaml:"previous_bookmark,omitempty"`
+	Message          string `json:"message,omitempty" yaml:"message,omitempty"`
+}
+
+// Queue is the normalized Queues queue model.
+type Queue struct {
+	QueueID             string          `json:"queue_id" yaml:"queue_id"`
+	QueueName           string          `json:"queue_name" yaml:"queue_name"`
+	CreatedOn           string          `json:"created_on,omitempty" yaml:"created_on,omitempty"`
+	ModifiedOn          string          `json:"modified_on,omitempty" yaml:"modified_on,omitempty"`
+	ConsumersTotalCount float64         `json:"consumers_total_count,omitempty" yaml:"consumers_total_count,omitempty"`
+	ProducersTotalCount float64         `json:"producers_total_count,omitempty" yaml:"producers_total_count,omitempty"`
+	Settings            *QueueSettings  `json:"settings,omitempty" yaml:"settings,omitempty"`
+	Consumers           []QueueConsumer `json:"consumers,omitempty" yaml:"consumers,omitempty"`
+}
+
+// QueueSettings are the queue delivery settings.
+type QueueSettings struct {
+	DeliveryDelay          float64 `json:"delivery_delay,omitempty" yaml:"delivery_delay,omitempty"`
+	DeliveryPaused         bool    `json:"delivery_paused,omitempty" yaml:"delivery_paused,omitempty"`
+	MessageRetentionPeriod float64 `json:"message_retention_period,omitempty" yaml:"message_retention_period,omitempty"`
+}
+
+// QueueConsumer is the normalized consumer model.
+type QueueConsumer struct {
+	ConsumerID      string          `json:"consumer_id" yaml:"consumer_id"`
+	Type            string          `json:"type,omitempty" yaml:"type,omitempty"`
+	ScriptName      string          `json:"script_name,omitempty" yaml:"script_name,omitempty"`
+	DeadLetterQueue string          `json:"dead_letter_queue,omitempty" yaml:"dead_letter_queue,omitempty"`
+	QueueName       string          `json:"queue_name,omitempty" yaml:"queue_name,omitempty"`
+	Settings        json.RawMessage `json:"settings,omitempty" yaml:"settings,omitempty"`
+	CreatedOn       string          `json:"created_on,omitempty" yaml:"created_on,omitempty"`
+}
+
+// QueueMetrics is the queue backlog metrics model.
+type QueueMetrics struct {
+	BacklogBytes             float64 `json:"backlog_bytes" yaml:"backlog_bytes"`
+	BacklogCount             float64 `json:"backlog_count" yaml:"backlog_count"`
+	OldestMessageTimestampMs float64 `json:"oldest_message_timestamp_ms" yaml:"oldest_message_timestamp_ms"`
+}
+
+// QueueMessage is one pulled or peeked message.
+type QueueMessage struct {
+	ID          string          `json:"id" yaml:"id"`
+	Attempts    float64         `json:"attempts,omitempty" yaml:"attempts,omitempty"`
+	Body        string          `json:"body" yaml:"body"`
+	LeaseID     string          `json:"lease_id,omitempty" yaml:"lease_id,omitempty"`
+	Metadata    json.RawMessage `json:"metadata,omitempty" yaml:"metadata,omitempty"`
+	TimestampMs float64         `json:"timestamp_ms,omitempty" yaml:"timestamp_ms,omitempty"`
+}
+
+// QueuePullResult is the result of a message pull or peek.
+type QueuePullResult struct {
+	Messages            []QueueMessage `json:"messages" yaml:"messages"`
+	MessageBacklogCount float64        `json:"message_backlog_count,omitempty" yaml:"message_backlog_count,omitempty"`
+}
+
+// QueueAckResult is the result of a message ack.
+type QueueAckResult struct {
+	AckCount   float64           `json:"ackCount" yaml:"ackCount"`
+	RetryCount float64           `json:"retryCount" yaml:"retryCount"`
+	Warnings   map[string]string `json:"warnings,omitempty" yaml:"warnings,omitempty"`
+}
+
+// QueuePurgeStatus is the queue purge job status.
+type QueuePurgeStatus struct {
+	Completed string `json:"completed" yaml:"completed"`
+	StartedAt string `json:"started_at" yaml:"started_at"`
+}

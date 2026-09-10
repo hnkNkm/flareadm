@@ -15,10 +15,12 @@ import (
 	"github.com/hnkNkm/flareadm/cmd/cache"
 	"github.com/hnkNkm/flareadm/cmd/certificate"
 	"github.com/hnkNkm/flareadm/cmd/configure"
+	"github.com/hnkNkm/flareadm/cmd/d1"
 	"github.com/hnkNkm/flareadm/cmd/dns"
 	"github.com/hnkNkm/flareadm/cmd/kv"
 	"github.com/hnkNkm/flareadm/cmd/pagerule"
 	"github.com/hnkNkm/flareadm/cmd/profile"
+	"github.com/hnkNkm/flareadm/cmd/queue"
 	"github.com/hnkNkm/flareadm/cmd/r2"
 	"github.com/hnkNkm/flareadm/cmd/redirect"
 	"github.com/hnkNkm/flareadm/cmd/ruleset"
@@ -87,6 +89,8 @@ func NewCommand(rt *app.Runtime) *cobra.Command {
 	root.AddCommand(redirect.New(rt))
 	root.AddCommand(r2.New(rt))
 	root.AddCommand(kv.New(rt))
+	root.AddCommand(d1.New(rt))
+	root.AddCommand(queue.New(rt))
 	root.AddCommand(pagerule.New(rt))
 	root.AddCommand(cache.New(rt))
 	root.AddCommand(api.New(rt))
