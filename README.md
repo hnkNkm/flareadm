@@ -14,7 +14,7 @@ administration.
 > FlareADM is an independent open-source project and is not affiliated with or endorsed by
 > Cloudflare, Inc. Cloudflare product and service names are used only to describe compatibility.
 
-**Status:** Pre-implementation / v0.1 in progress.
+**Status:** v0.1 implemented, unreleased.
 
 ## Quickstart
 

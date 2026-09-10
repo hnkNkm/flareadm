@@ -10,8 +10,7 @@ terminal, a script, a CI pipeline or an AI agent.
 It complements Wrangler rather than replacing it. Use Wrangler for Workers application
 development; use FlareADM for remote account and infrastructure administration.
 
-**Status:** pre-implementation. The project is specified but not yet implemented. The v0.1
-scope is defined in the [roadmap](roadmap.md).
+**Status:** v0.1 implemented (unreleased). Command surface, exit codes and normalized output are usable; releases are not yet published. See the [roadmap](roadmap.md).
 
 ## At a glance
 
@@ -30,7 +29,7 @@ scope is defined in the [roadmap](roadmap.md).
 | Profiles | Yes |
 | CI/agent support | First-class |
 | Telemetry | None by default |
-| License | Apache-2.0 (proposed) |
+| License | Apache-2.0 |
 
 ## Index
 

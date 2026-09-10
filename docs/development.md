@@ -77,13 +77,19 @@ nix build
 
 ### Bootstrap note
 
-`go.mod` and `go.sum` are now committed, so `nix build` proceeds as far as fetching Go module
-dependencies — which is exactly where it stops. `flake.nix` still pins
-`vendorHash = pkgs.lib.fakeHash`, a deliberately invalid placeholder.
+`nix build` works today: `flake.nix` pins a real fixed-output hash of the Go module fetch.
 
-Run `nix build` once: Nix fails and prints the correct dependency hash in the error message.
-Paste that hash into the `vendorHash` attribute in `flake.nix`, then run `nix build` again to
-produce `./result/bin/flareadm`.
+Regenerate that hash whenever `go.mod`/`go.sum` change: temporarily set
+`vendorHash = pkgs.lib.fakeHash`, run `nix build`, and paste the hash printed in the error
+message back into `flake.nix`.
+
+The built binary reports the flake-derived version, which proves the `-ldflags` injection
+works end to end:
+
+```bash
+./result/bin/flareadm version
+# 0.1.0-unstable-<shortrev>
+```
 
 ## Release
 
