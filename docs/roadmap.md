@@ -113,6 +113,8 @@ Still open:
 
 ### v0.3 — Developer storage/services administration
 
+Shipped as **v0.3.0** (2026-09-10).
+
 Delivered:
 
 - r2 buckets `list`/`get`/`create`/`delete`;
