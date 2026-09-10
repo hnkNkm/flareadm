@@ -391,3 +391,75 @@ type QueuePurgeStatus struct {
 	Completed string `json:"completed" yaml:"completed"`
 	StartedAt string `json:"started_at" yaml:"started_at"`
 }
+
+// ---- v0.3 slice 3: Hyperdrive and Vectorize ------------------------------
+
+// HyperdriveConfig is the normalized Hyperdrive configuration model. Origin
+// and Caching are kept as raw JSON (origin carries credentials).
+type HyperdriveConfig struct {
+	ID                    string          `json:"id" yaml:"id"`
+	Name                  string          `json:"name" yaml:"name"`
+	Origin                json.RawMessage `json:"origin,omitempty" yaml:"origin,omitempty"`
+	Caching               json.RawMessage `json:"caching,omitempty" yaml:"caching,omitempty"`
+	OriginConnectionLimit int64           `json:"origin_connection_limit,omitempty" yaml:"origin_connection_limit,omitempty"`
+	CreatedOn             string          `json:"created_on,omitempty" yaml:"created_on,omitempty"`
+	ModifiedOn            string          `json:"modified_on,omitempty" yaml:"modified_on,omitempty"`
+}
+
+// VectorizeIndex is the normalized Vectorize index model.
+type VectorizeIndex struct {
+	Name        string                `json:"name" yaml:"name"`
+	Description string                `json:"description,omitempty" yaml:"description,omitempty"`
+	Config      *VectorizeIndexConfig `json:"config,omitempty" yaml:"config,omitempty"`
+	CreatedOn   string                `json:"created_on,omitempty" yaml:"created_on,omitempty"`
+	ModifiedOn  string                `json:"modified_on,omitempty" yaml:"modified_on,omitempty"`
+}
+
+// VectorizeIndexConfig describes the index dimension configuration.
+type VectorizeIndexConfig struct {
+	Dimensions int64  `json:"dimensions" yaml:"dimensions"`
+	Metric     string `json:"metric" yaml:"metric"`
+}
+
+// VectorizeInfo is the index statistics model.
+type VectorizeInfo struct {
+	VectorCount           int64  `json:"vectorCount" yaml:"vectorCount"`
+	Dimensions            int64  `json:"dimensions" yaml:"dimensions"`
+	ProcessedUpToMutation string `json:"processedUpToMutation,omitempty" yaml:"processedUpToMutation,omitempty"`
+	ProcessedUpToDatetime string `json:"processedUpToDatetime,omitempty" yaml:"processedUpToDatetime,omitempty"`
+}
+
+// VectorizeMutation is the async mutation acknowledgement model.
+type VectorizeMutation struct {
+	MutationID string `json:"mutationId" yaml:"mutationId"`
+}
+
+// VectorizeMatch is one query match.
+type VectorizeMatch struct {
+	ID        string          `json:"id" yaml:"id"`
+	Score     float64         `json:"score" yaml:"score"`
+	Namespace string          `json:"namespace,omitempty" yaml:"namespace,omitempty"`
+	Metadata  json.RawMessage `json:"metadata,omitempty" yaml:"metadata,omitempty"`
+	Values    []float64       `json:"values,omitempty" yaml:"values,omitempty"`
+}
+
+// VectorizeQueryResult is the query response.
+type VectorizeQueryResult struct {
+	Count   int64            `json:"count" yaml:"count"`
+	Matches []VectorizeMatch `json:"matches" yaml:"matches"`
+}
+
+// VectorizeVectorsResult is a generic vectors payload (get-by-ids and list).
+type VectorizeVectorsResult struct {
+	Vectors     []json.RawMessage `json:"vectors" yaml:"vectors"`
+	Count       int64             `json:"count,omitempty" yaml:"count,omitempty"`
+	TotalCount  int64             `json:"totalCount,omitempty" yaml:"totalCount,omitempty"`
+	IsTruncated bool              `json:"isTruncated,omitempty" yaml:"isTruncated,omitempty"`
+	NextCursor  string            `json:"nextCursor,omitempty" yaml:"nextCursor,omitempty"`
+}
+
+// VectorizeMetadataIndex is one metadata index entry.
+type VectorizeMetadataIndex struct {
+	PropertyName string `json:"propertyName" yaml:"propertyName"`
+	IndexType    string `json:"indexType,omitempty" yaml:"indexType,omitempty"`
+}

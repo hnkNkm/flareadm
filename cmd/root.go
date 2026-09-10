@@ -17,6 +17,7 @@ import (
 	"github.com/hnkNkm/flareadm/cmd/configure"
 	"github.com/hnkNkm/flareadm/cmd/d1"
 	"github.com/hnkNkm/flareadm/cmd/dns"
+	"github.com/hnkNkm/flareadm/cmd/hyperdrive"
 	"github.com/hnkNkm/flareadm/cmd/kv"
 	"github.com/hnkNkm/flareadm/cmd/pagerule"
 	"github.com/hnkNkm/flareadm/cmd/profile"
@@ -25,6 +26,7 @@ import (
 	"github.com/hnkNkm/flareadm/cmd/redirect"
 	"github.com/hnkNkm/flareadm/cmd/ruleset"
 	"github.com/hnkNkm/flareadm/cmd/ssl"
+	"github.com/hnkNkm/flareadm/cmd/vectorize"
 	"github.com/hnkNkm/flareadm/cmd/waf"
 	"github.com/hnkNkm/flareadm/cmd/zone"
 	"github.com/hnkNkm/flareadm/internal/app"
@@ -91,6 +93,8 @@ func NewCommand(rt *app.Runtime) *cobra.Command {
 	root.AddCommand(kv.New(rt))
 	root.AddCommand(d1.New(rt))
 	root.AddCommand(queue.New(rt))
+	root.AddCommand(hyperdrive.New(rt))
+	root.AddCommand(vectorize.New(rt))
 	root.AddCommand(pagerule.New(rt))
 	root.AddCommand(cache.New(rt))
 	root.AddCommand(api.New(rt))

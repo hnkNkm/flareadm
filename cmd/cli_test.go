@@ -83,12 +83,13 @@ func (a *apiStub) setHeader(key, value string) {
 }
 
 type recordedRequest struct {
-	Method string
-	Path   string
-	Query  string
-	Body   string
-	Auth   string
-	Host   string
+	Method      string
+	Path        string
+	Query       string
+	Body        string
+	Auth        string
+	Host        string
+	ContentType string
 }
 
 func (a *apiStub) requests() []recordedRequest {
@@ -114,12 +115,13 @@ func newAPI(t *testing.T, handle func(method, path string, r recordedRequest) (i
 	a.handler = func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		rec := recordedRequest{
-			Method: r.Method,
-			Path:   r.URL.Path,
-			Query:  r.URL.RawQuery,
-			Body:   string(body),
-			Auth:   r.Header.Get("Authorization"),
-			Host:   r.Host,
+			Method:      r.Method,
+			Path:        r.URL.Path,
+			Query:       r.URL.RawQuery,
+			Body:        string(body),
+			Auth:        r.Header.Get("Authorization"),
+			Host:        r.Host,
+			ContentType: r.Header.Get("Content-Type"),
 		}
 		a.mu.Lock()
 		a.reqs = append(a.reqs, rec)
@@ -3984,6 +3986,10 @@ func TestPayloadHygiene(t *testing.T) {
 		{"kv value", "S3CR3T-KV-VALUE",
 			[]string{"kv", "key", "put", "k1", "--namespace", "ns1", "--value", "S3CR3T-KV-VALUE",
 				"--account-id", accountID, "--debug", "--endpoint-url", ep}},
+		{"vectorize query vector", "S3CR3T-QUERY-VECTOR",
+			[]string{"vectorize", "vector", "query", "idx1", "--vector", "[0.5]",
+				"--filter", `{"marker":"S3CR3T-QUERY-VECTOR"}`,
+				"--account-id", accountID, "--debug", "--endpoint-url", ep}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -4021,5 +4027,488 @@ func TestPayloadHygiene(t *testing.T) {
 	}
 	if strings.Contains(res.stdout, "S3CR3T-DUMP-BYTES") || strings.Contains(res.stderr, "S3CR3T-DUMP-BYTES") {
 		t.Fatalf("import file bytes leaked:\nstdout=%q\nstderr=%q", res.stdout, res.stderr)
+	}
+}
+
+// ---- v0.3 slice 3: hyperdrive / vectorize ---------------------------------
+
+func hyperdriveJSON(id, name string) map[string]any {
+	return map[string]any{
+		"id": id, "name": name,
+		"origin": map[string]any{
+			"host": "db.example.com", "port": float64(5432), "database": "app",
+			"user": "app_user", "password": "origin-password", "scheme": "postgres",
+		},
+		"caching":                 map[string]any{"disabled": false},
+		"origin_connection_limit": float64(10),
+		"created_on":              "2025-01-01T00:00:00Z",
+		"modified_on":             "2025-01-02T00:00:00Z",
+	}
+}
+
+func indexJSON(name string) map[string]any {
+	return map[string]any{
+		"name": name, "description": "docs index",
+		"config":     map[string]any{"dimensions": float64(768), "metric": "cosine"},
+		"created_on": "2025-01-01T00:00:00Z", "modified_on": "2025-01-02T00:00:00Z",
+	}
+}
+
+func v05API(t *testing.T) *apiStub {
+	hbase := "/accounts/" + accountID + "/hyperdrive/configs"
+	vbase := "/accounts/" + accountID + "/vectorize/v2/indexes"
+	return newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		switch {
+		// Hyperdrive
+		case method == "GET" && path == hbase:
+			if strings.Contains(r.Query, "page=2") {
+				return 200, envelope([]any{})
+			}
+			return 200, envelope([]any{hyperdriveJSON("hd1", "app-db")})
+		case method == "POST" && path == hbase:
+			return 200, envelope(hyperdriveJSON("hdnew", "new-config"))
+		case (method == "GET" || method == "PATCH" || method == "DELETE") && path == hbase+"/hd1":
+			if method == "DELETE" {
+				return 200, envelope(nil)
+			}
+			return 200, envelope(hyperdriveJSON("hd1", "app-db"))
+		// Vectorize indexes
+		case method == "GET" && path == vbase:
+			return 200, envelope([]any{indexJSON("idx1")})
+		case method == "POST" && path == vbase:
+			return 200, envelope(indexJSON("idx-new"))
+		case (method == "GET" || method == "DELETE") && path == vbase+"/idx1":
+			if method == "DELETE" {
+				return 200, envelope(nil)
+			}
+			return 200, envelope(indexJSON("idx1"))
+		case method == "GET" && path == vbase+"/idx1/info":
+			return 200, envelope(map[string]any{
+				"vectorCount": float64(42), "dimensions": float64(768),
+				"processedUpToMutation": "mut-9",
+			})
+		case method == "POST" && (path == vbase+"/idx1/insert" || path == vbase+"/idx1/upsert"):
+			return 200, envelope(map[string]any{"mutationId": "mut1"})
+		case method == "POST" && path == vbase+"/idx1/query":
+			return 200, envelope(map[string]any{
+				"count":   float64(1),
+				"matches": []any{map[string]any{"id": "v1", "score": 0.9, "namespace": "ns"}},
+			})
+		case method == "POST" && path == vbase+"/idx1/get_by_ids":
+			return 200, envelope(map[string]any{"vectors": []any{map[string]any{"id": "v1", "values": []any{0.1, 0.2}}}})
+		case method == "POST" && path == vbase+"/idx1/delete_by_ids":
+			return 200, envelope(map[string]any{"mutationId": "mut2"})
+		case method == "GET" && path == vbase+"/idx1/list":
+			return 200, envelope(map[string]any{
+				"vectors": []any{map[string]any{"id": "v1"}},
+				"count":   float64(1), "isTruncated": true, "totalCount": float64(2), "nextCursor": "cur2",
+			})
+		case method == "GET" && path == vbase+"/idx1/metadata_index/list":
+			return 200, envelope([]any{map[string]any{"propertyName": "lang", "indexType": "string"}})
+		case method == "POST" && (path == vbase+"/idx1/metadata_index/create" || path == vbase+"/idx1/metadata_index/delete"):
+			return 200, envelope(map[string]any{"mutationId": "mut3"})
+		}
+		s, b := apiErr(404, 7000, "not found")
+		return s, b
+	})
+}
+
+func TestHyperdriveConfigCRUD(t *testing.T) {
+	api := v05API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(args ...string) []string {
+		return append(args, "--account-id", accountID, "--endpoint-url", ep)
+	}
+	originFile := filepath.Join(t.TempDir(), "origin.json")
+	originJSON := `{"host":"db.example.com","port":5432,"database":"app","user":"app_user","password":"S3CR3T-ORIGIN-PASSWORD","scheme":"postgres"}`
+	_ = os.WriteFile(originFile, []byte(originJSON), 0o600)
+
+	res := runCLI(t, base("hyperdrive", "config", "list", "--json")...)
+	if res.code != 0 {
+		t.Fatalf("list: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if api.count() != 2 {
+		t.Fatalf("list requests = %d, want 2 pages", api.count())
+	}
+	if !strings.Contains(res.stdout, `"id": "hd1"`) || !strings.Contains(res.stdout, "db.example.com") {
+		t.Fatalf("list output = %s", res.stdout)
+	}
+
+	res = runCLI(t, base("hyperdrive", "config", "get", "hd1")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "app-db") || !strings.Contains(res.stdout, "db.example.com") {
+		t.Fatalf("get: code=%d stdout=%q", res.code, res.stdout)
+	}
+
+	// create with @file origin: exact body, no secret leakage
+	res = runCLI(t, base("hyperdrive", "config", "create", "--name", "new-config",
+		"--origin", "@"+originFile, "--caching", `{"disabled":true}`, "--origin-connection-limit", "5", "--debug")...)
+	if res.code != 0 {
+		t.Fatalf("create: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Method != "POST" || req.Path != "/accounts/"+accountID+"/hyperdrive/configs" {
+		t.Fatalf("create request = %+v", req)
+	}
+	got := decodeRequestBody(t, req.Body)
+	inner, ok := got["hyperdrive"].(map[string]any)
+	if !ok {
+		t.Fatalf("create body = %#v", got)
+	}
+	if inner["name"] != "new-config" || inner["origin_connection_limit"] != float64(5) {
+		t.Fatalf("create inner = %#v", inner)
+	}
+	origin := inner["origin"].(map[string]any)
+	if origin["password"] != "S3CR3T-ORIGIN-PASSWORD" || origin["host"] != "db.example.com" {
+		t.Fatalf("origin = %#v", origin)
+	}
+	if !reflect.DeepEqual(inner["caching"], map[string]any{"disabled": true}) {
+		t.Fatalf("caching = %#v", inner["caching"])
+	}
+	if strings.Contains(res.stdout, "S3CR3T-ORIGIN-PASSWORD") || strings.Contains(res.stderr, "S3CR3T-ORIGIN-PASSWORD") {
+		t.Fatalf("origin secret leaked: stdout=%q stderr=%q", res.stdout, res.stderr)
+	}
+	if !strings.Contains(res.stderr, "debug:") {
+		t.Fatalf("expected debug logging to be active")
+	}
+
+	// inline origin rejected
+	res = runCLI(t, base("hyperdrive", "config", "create", "--name", "x", "--origin", originJSON)...)
+	if res.code != errors.CodeInvalid {
+		t.Fatalf("inline origin: code=%d, want 2", res.code)
+	}
+	if !strings.Contains(res.stderr, "@file") || strings.Contains(res.stderr, "S3CR3T-ORIGIN-PASSWORD") {
+		t.Fatalf("inline origin error message = %q", res.stderr)
+	}
+
+	// update: PATCH with only caching
+	res = runCLI(t, base("hyperdrive", "config", "update", "hd1", "--caching", `{"disabled":false}`)...)
+	if res.code != 0 {
+		t.Fatalf("update: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "PATCH" {
+		t.Fatalf("update request = %+v", req)
+	}
+	got = decodeRequestBody(t, req.Body)
+	inner = got["hyperdrive"].(map[string]any)
+	if _, hasName := inner["name"]; hasName {
+		t.Fatalf("update must not send unnamed fields: %#v", inner)
+	}
+	if !reflect.DeepEqual(inner["caching"], map[string]any{"disabled": false}) {
+		t.Fatalf("update caching = %#v", inner["caching"])
+	}
+
+	// validation
+	for _, args := range [][]string{
+		base("hyperdrive", "config", "create", "--origin", "@"+originFile),
+		base("hyperdrive", "config", "create", "--name", "x"),
+		base("hyperdrive", "config", "update", "hd1"),
+		base("hyperdrive", "config", "update", "hd1", "--caching", "[1]"),
+	} {
+		if res := runCLI(t, args...); res.code != errors.CodeInvalid {
+			t.Fatalf("%v: code=%d, want 2 (stderr=%q)", args, res.code, res.stderr)
+		}
+	}
+
+	// delete guard rails
+	del := base("hyperdrive", "config", "delete", "hd1")
+	if res := runCLI(t, del...); res.code != errors.CodeInvalid {
+		t.Fatalf("refusal: code=%d", res.code)
+	}
+	for _, r := range api.requests() {
+		if r.Method == "DELETE" {
+			t.Fatalf("DELETE without confirmation")
+		}
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--dry-run")...); res.code != 0 || !strings.Contains(res.stdout, "Would delete Hyperdrive configuration app-db") {
+		t.Fatalf("dry-run: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--yes")...); res.code != 0 {
+		t.Fatalf("delete: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if req := api.last(); req.Method != "DELETE" || req.Path != "/accounts/"+accountID+"/hyperdrive/configs/hd1" {
+		t.Fatalf("delete request = %+v", req)
+	}
+
+	// error mapping
+	api404 := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		s, b := apiErr(404, 7000, "config not found")
+		return s, b
+	})
+	if res := runCLI(t, "hyperdrive", "config", "get", "hd1", "--account-id", accountID, "--endpoint-url", api404.srv.URL); res.code != errors.CodeNotFound {
+		t.Fatalf("404: code=%d, want 5", res.code)
+	}
+	api403 := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		s, b := apiErr(403, 9109, "forbidden")
+		return s, b
+	})
+	if res := runCLI(t, "hyperdrive", "config", "list", "--account-id", accountID, "--endpoint-url", api403.srv.URL); res.code != errors.CodePermission {
+		t.Fatalf("403: code=%d, want 4", res.code)
+	}
+}
+
+func TestVectorizeIndexCRUD(t *testing.T) {
+	api := v05API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(args ...string) []string {
+		return append(args, "--account-id", accountID, "--endpoint-url", ep)
+	}
+
+	res := runCLI(t, base("vectorize", "index", "list", "--json")...)
+	if res.code != 0 {
+		t.Fatalf("list: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if !strings.Contains(res.stdout, `"name": "idx1"`) || !strings.Contains(res.stdout, `"dimensions": 768`) {
+		t.Fatalf("list output = %s", res.stdout)
+	}
+
+	res = runCLI(t, base("vectorize", "index", "get", "idx1")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "idx1") || !strings.Contains(res.stdout, "cosine") {
+		t.Fatalf("get: code=%d stdout=%q", res.code, res.stdout)
+	}
+
+	res = runCLI(t, base("vectorize", "index", "create", "--name", "idx-new", "--dimensions", "768", "--metric", "cosine", "--description", "docs")...)
+	if res.code != 0 {
+		t.Fatalf("create: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Method != "POST" || req.Path != "/accounts/"+accountID+"/vectorize/v2/indexes" {
+		t.Fatalf("create request = %+v", req)
+	}
+	want := map[string]any{
+		"name": "idx-new", "description": "docs",
+		"config": map[string]any{"dimensions": float64(768), "metric": "cosine"},
+	}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, want) {
+		t.Fatalf("create body mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+
+	// preset variant
+	res = runCLI(t, base("vectorize", "index", "create", "--name", "idx-preset", "--preset", "my-preset")...)
+	if res.code != 0 {
+		t.Fatalf("preset create: code=%d stderr=%q", res.code, res.stderr)
+	}
+	got := decodeRequestBody(t, api.last().Body)
+	if !reflect.DeepEqual(got["config"], map[string]any{"preset": "my-preset"}) {
+		t.Fatalf("preset config = %#v", got["config"])
+	}
+
+	// validation
+	for _, args := range [][]string{
+		base("vectorize", "index", "create", "--dimensions", "768", "--metric", "cosine"),
+		base("vectorize", "index", "create", "--name", "x"),
+		base("vectorize", "index", "create", "--name", "x", "--dimensions", "768", "--metric", "cosine", "--preset", "p"),
+		base("vectorize", "index", "create", "--name", "x", "--dimensions", "768", "--metric", "manhattan"),
+	} {
+		if res := runCLI(t, args...); res.code != errors.CodeInvalid {
+			t.Fatalf("%v: code=%d, want 2 (stderr=%q)", args, res.code, res.stderr)
+		}
+	}
+
+	res = runCLI(t, base("vectorize", "index", "info", "idx1")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "42") || !strings.Contains(res.stdout, "768") {
+		t.Fatalf("info: code=%d stdout=%q", res.code, res.stdout)
+	}
+
+	// delete guard rails
+	del := base("vectorize", "index", "delete", "idx1")
+	if res := runCLI(t, del...); res.code != errors.CodeInvalid {
+		t.Fatalf("refusal: code=%d", res.code)
+	}
+	for _, r := range api.requests() {
+		if r.Method == "DELETE" {
+			t.Fatalf("DELETE without confirmation")
+		}
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--dry-run")...); res.code != 0 || !strings.Contains(res.stdout, "Would delete Vectorize index idx1") {
+		t.Fatalf("dry-run: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--yes")...); res.code != 0 {
+		t.Fatalf("delete: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if req := api.last(); req.Method != "DELETE" || req.Path != "/accounts/"+accountID+"/vectorize/v2/indexes/idx1" {
+		t.Fatalf("delete request = %+v", req)
+	}
+}
+
+func TestVectorizeVectorOps(t *testing.T) {
+	api := v05API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(args ...string) []string {
+		return append(args, "--account-id", accountID, "--endpoint-url", ep)
+	}
+	ndjson := "{\"id\":\"v1\",\"values\":[0.1,0.2]}\n"
+	vectorsFile := filepath.Join(t.TempDir(), "vectors.ndjson")
+	_ = os.WriteFile(vectorsFile, []byte(ndjson), 0o600)
+
+	// insert: exact NDJSON body + content type + unparsable behavior
+	res := runCLI(t, base("vectorize", "vector", "insert", "idx1", "--vectors", "@"+vectorsFile, "--unparsable-behavior", "discard")...)
+	if res.code != 0 {
+		t.Fatalf("insert: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Method != "POST" || req.Path != "/accounts/"+accountID+"/vectorize/v2/indexes/idx1/insert" {
+		t.Fatalf("insert request = %+v", req)
+	}
+	if req.Body != ndjson {
+		t.Fatalf("insert body = %q, want %q", req.Body, ndjson)
+	}
+	if !strings.HasPrefix(req.ContentType, "application/x-ndjson") {
+		t.Fatalf("insert content type = %q", req.ContentType)
+	}
+	if !strings.Contains(req.Query, "unparsable-behavior=discard") {
+		t.Fatalf("insert query = %q", req.Query)
+	}
+	if !strings.Contains(res.stdout, "mut1") {
+		t.Fatalf("insert output = %s", res.stdout)
+	}
+
+	// upsert
+	res = runCLI(t, base("vectorize", "vector", "upsert", "idx1", "--vectors", "@"+vectorsFile)...)
+	if res.code != 0 {
+		t.Fatalf("upsert: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if api.last().Path != "/accounts/"+accountID+"/vectorize/v2/indexes/idx1/upsert" {
+		t.Fatalf("upsert path = %q", api.last().Path)
+	}
+
+	// insert requires @file
+	res = runCLI(t, base("vectorize", "vector", "insert", "idx1", "--vectors", ndjson)...)
+	if res.code != errors.CodeInvalid || !strings.Contains(res.stderr, "@file") {
+		t.Fatalf("inline vectors: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if res := runCLI(t, base("vectorize", "vector", "insert", "idx1", "--vectors", "@"+vectorsFile, "--unparsable-behavior", "sometimes")...); res.code != errors.CodeInvalid {
+		t.Fatalf("bad behavior: code=%d", res.code)
+	}
+
+	// query: exact body + table
+	res = runCLI(t, base("vectorize", "vector", "query", "idx1", "--vector", "[0.1, 0.2]",
+		"--top-k", "3", "--return-values", "--return-metadata", "all", "--filter", `{"lang":"en"}`)...)
+	if res.code != 0 {
+		t.Fatalf("query: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Path != "/accounts/"+accountID+"/vectorize/v2/indexes/idx1/query" {
+		t.Fatalf("query path = %q", req.Path)
+	}
+	want := map[string]any{
+		"vector": []any{0.1, 0.2}, "topK": float64(3),
+		"returnValues": true, "returnMetadata": "all",
+		"filter": map[string]any{"lang": "en"},
+	}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, want) {
+		t.Fatalf("query body mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+	if !strings.Contains(res.stdout, "v1") || !strings.Contains(res.stdout, "0.9000") {
+		t.Fatalf("query output = %s", res.stdout)
+	}
+	for _, args := range [][]string{
+		base("vectorize", "vector", "query", "idx1", "--vector", `{"a":1}`),
+		base("vectorize", "vector", "query", "idx1", "--vector", `["a"]`),
+		base("vectorize", "vector", "query", "idx1", "--vector", "[1]", "--return-metadata", "sometimes"),
+	} {
+		if res := runCLI(t, args...); res.code != errors.CodeInvalid {
+			t.Fatalf("%v: code=%d, want 2 (stderr=%q)", args, res.code, res.stderr)
+		}
+	}
+
+	// get by ids
+	res = runCLI(t, base("vectorize", "vector", "get", "idx1", "--id", "v1", "--id", "v2")...)
+	if res.code != 0 {
+		t.Fatalf("get: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if got := decodeRequestBody(t, api.last().Body); !reflect.DeepEqual(got, map[string]any{"ids": []any{"v1", "v2"}}) {
+		t.Fatalf("get body = %#v", got)
+	}
+	if !strings.Contains(res.stdout, "v1") {
+		t.Fatalf("get output = %s", res.stdout)
+	}
+
+	// delete by ids guard rails
+	del := base("vectorize", "vector", "delete", "idx1", "--id", "v1")
+	if res := runCLI(t, del...); res.code != errors.CodeInvalid {
+		t.Fatalf("refusal: code=%d", res.code)
+	}
+	for _, r := range api.requests() {
+		if r.Path == "/accounts/"+accountID+"/vectorize/v2/indexes/idx1/delete_by_ids" {
+			t.Fatalf("delete_by_ids sent without confirmation")
+		}
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--dry-run")...); res.code != 0 || !strings.Contains(res.stdout, "Would delete 1 vector(s)") {
+		t.Fatalf("dry-run: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--yes")...); res.code != 0 {
+		t.Fatalf("delete: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if got := decodeRequestBody(t, api.last().Body); !reflect.DeepEqual(got, map[string]any{"ids": []any{"v1"}}) {
+		t.Fatalf("delete body = %#v", got)
+	}
+
+	// list with cursor reporting
+	res = runCLI(t, base("vectorize", "vector", "list", "idx1", "--count", "1", "--cursor", "cur1")...)
+	if res.code != 0 {
+		t.Fatalf("list: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if !strings.Contains(req.Query, "count=1") || !strings.Contains(req.Query, "cursor=cur1") {
+		t.Fatalf("list query = %q", req.Query)
+	}
+	if !strings.Contains(res.stdout, "v1") || !strings.Contains(res.stderr, "next cursor: cur2") {
+		t.Fatalf("list stdout=%q stderr=%q", res.stdout, res.stderr)
+	}
+}
+
+func TestVectorizeMetadataIndexes(t *testing.T) {
+	api := v05API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(args ...string) []string {
+		return append(args, "--account-id", accountID, "--endpoint-url", ep)
+	}
+
+	res := runCLI(t, base("vectorize", "index", "metadata", "list", "idx1")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "lang") {
+		t.Fatalf("list: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if api.last().Path != "/accounts/"+accountID+"/vectorize/v2/indexes/idx1/metadata_index/list" {
+		t.Fatalf("list path = %q", api.last().Path)
+	}
+
+	res = runCLI(t, base("vectorize", "index", "metadata", "create", "idx1", "--property", "lang", "--type", "string")...)
+	if res.code != 0 {
+		t.Fatalf("create: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if got := decodeRequestBody(t, api.last().Body); !reflect.DeepEqual(got, map[string]any{"propertyName": "lang", "indexType": "string"}) {
+		t.Fatalf("create body = %#v", got)
+	}
+	for _, args := range [][]string{
+		base("vectorize", "index", "metadata", "create", "idx1", "--type", "string"),
+		base("vectorize", "index", "metadata", "create", "idx1", "--property", "lang", "--type", "date"),
+		base("vectorize", "index", "metadata", "delete", "idx1"),
+	} {
+		if res := runCLI(t, args...); res.code != errors.CodeInvalid {
+			t.Fatalf("%v: code=%d, want 2 (stderr=%q)", args, res.code, res.stderr)
+		}
+	}
+
+	del := base("vectorize", "index", "metadata", "delete", "idx1", "--property", "lang")
+	if res := runCLI(t, del...); res.code != errors.CodeInvalid {
+		t.Fatalf("refusal: code=%d", res.code)
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--dry-run")...); res.code != 0 || !strings.Contains(res.stdout, "Would delete metadata index lang") {
+		t.Fatalf("dry-run: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--yes")...); res.code != 0 {
+		t.Fatalf("delete: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if got := decodeRequestBody(t, api.last().Body); !reflect.DeepEqual(got, map[string]any{"propertyName": "lang"}) {
+		t.Fatalf("delete body = %#v", got)
 	}
 }
