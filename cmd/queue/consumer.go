@@ -170,6 +170,9 @@ func newConsumerUpdate(rt *app.Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if rt.DryRunFlag {
+				return previewLine(rt, "Would update consumer "+args[1]+" of queue "+args[0])
+			}
 			res, err := client.UpdateConsumer(cmd.Context(), ref.ID, args[0], args[1], p)
 			if err != nil {
 				return err

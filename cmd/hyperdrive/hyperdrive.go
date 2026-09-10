@@ -225,6 +225,9 @@ func newConfigUpdate(rt *app.Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if rt.DryRunFlag {
+				return previewLine(rt, "Would update Hyperdrive configuration "+args[0])
+			}
 			res, err := client.UpdateHyperdriveConfig(cmd.Context(), ref.ID, args[0], w)
 			if err != nil {
 				return err

@@ -175,6 +175,9 @@ func newDatabaseUpdate(rt *app.Runtime) *cobra.Command {
 			if !contains(cloudflare.D1ReadReplicationModes, replicationFlag) {
 				return errors.Usage("invalid --read-replication-mode %q (supported: %s)", replicationFlag, strings.Join(cloudflare.D1ReadReplicationModes, ", "))
 			}
+			if rt.DryRunFlag {
+				return previewLine(rt, "Would set the read replication mode of D1 database "+args[0]+" to "+replicationFlag)
+			}
 			client, ref, err := rt.ResolveAccount(cmd.Context())
 			if err != nil {
 				return err

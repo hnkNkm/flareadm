@@ -61,6 +61,9 @@ func newMetadataCreate(rt *app.Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if rt.DryRunFlag {
+				return previewLine(rt, "Would create metadata index "+propertyFlag+" on Vectorize index "+args[0])
+			}
 			res, err := client.CreateVectorizeMetadataIndex(cmd.Context(), ref.ID, args[0], propertyFlag, typeFlag)
 			if err != nil {
 				return err

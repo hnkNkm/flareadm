@@ -147,6 +147,9 @@ func newQueueUpdate(rt *app.Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if rt.DryRunFlag {
+				return previewLine(rt, "Would update queue "+args[0])
+			}
 			res, err := client.UpdateQueue(cmd.Context(), ref.ID, args[0], up)
 			if err != nil {
 				return err

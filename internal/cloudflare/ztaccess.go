@@ -106,9 +106,9 @@ func accessCreate[T any](ctx context.Context, c *Client, path string, body map[s
 	return &GetResult[T]{Item: item, RawBody: raw}, nil
 }
 
-// accessMergeUpdate applies overrides onto the current object (read-modify-PUT)
-// so fields this CLI does not model are preserved.
-func accessMergeUpdate[T any](ctx context.Context, c *Client, path string, overrides map[string]any) (*GetResult[T], error) {
+// mergeUpdate applies overrides onto the current object (read-modify-write)
+// with the given verb, so fields this CLI does not model are preserved.
+func mergeUpdate[T any](ctx context.Context, c *Client, method, path string, overrides map[string]any) (*GetResult[T], error) {
 	if len(overrides) == 0 {
 		return nil, errors.Usage("nothing to update")
 	}
@@ -118,7 +118,7 @@ func accessMergeUpdate[T any](ctx context.Context, c *Client, path string, overr
 	}
 	var current map[string]any
 	if err := json.Unmarshal(env.Result, &current); err != nil {
-		return nil, errors.Wrap(errors.CodeUnclassified, "decoding existing Access object", err)
+		return nil, errors.Wrap(errors.CodeUnclassified, "decoding existing object", err)
 	}
 	for k, v := range overrides {
 		current[k] = v
@@ -127,15 +127,21 @@ func accessMergeUpdate[T any](ctx context.Context, c *Client, path string, overr
 	if err != nil {
 		return nil, err
 	}
-	putEnv, raw, err := c.requestJSON(ctx, "PUT", path, nil, payload, "application/json")
+	writeEnv, raw, err := c.requestJSON(ctx, method, path, nil, payload, "application/json")
 	if err != nil {
 		return nil, err
 	}
 	var item T
-	if err := decodeResult(putEnv, &item); err != nil {
-		return nil, errors.Wrap(errors.CodeUnclassified, "decoding Access response", err)
+	if err := decodeResult(writeEnv, &item); err != nil {
+		return nil, errors.Wrap(errors.CodeUnclassified, "decoding response", err)
 	}
 	return &GetResult[T]{Item: item, RawBody: raw}, nil
+}
+
+// accessMergeUpdate applies overrides onto the current Access object with
+// read-modify-PUT so fields this CLI does not model are preserved.
+func accessMergeUpdate[T any](ctx context.Context, c *Client, path string, overrides map[string]any) (*GetResult[T], error) {
+	return mergeUpdate[T](ctx, c, "PUT", path, overrides)
 }
 
 func accessDelete(ctx context.Context, c *Client, path string) error {

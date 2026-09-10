@@ -44,6 +44,12 @@ func newDatabaseImport(rt *app.Runtime) *cobra.Command {
 			if waitFlag && !hasFile {
 				return errors.Usage("--wait requires --file")
 			}
+			if rt.DryRunFlag {
+				if hasFile {
+					return previewLine(rt, "Would import "+fileFlag+" into D1 database "+args[0])
+				}
+				return previewLine(rt, "Would run the D1 import step "+actionFlag+" on database "+args[0])
+			}
 			client, ref, err := rt.ResolveAccount(cmd.Context())
 			if err != nil {
 				return err

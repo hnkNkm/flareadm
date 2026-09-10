@@ -10,24 +10,34 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/hnkNkm/flareadm/cmd/account"
+	"github.com/hnkNkm/flareadm/cmd/analytics"
 	"github.com/hnkNkm/flareadm/cmd/api"
+	"github.com/hnkNkm/flareadm/cmd/auditlog"
 	"github.com/hnkNkm/flareadm/cmd/auth"
 	"github.com/hnkNkm/flareadm/cmd/cache"
 	"github.com/hnkNkm/flareadm/cmd/certificate"
 	"github.com/hnkNkm/flareadm/cmd/configure"
 	"github.com/hnkNkm/flareadm/cmd/d1"
 	"github.com/hnkNkm/flareadm/cmd/dns"
+	"github.com/hnkNkm/flareadm/cmd/healthcheck"
 	"github.com/hnkNkm/flareadm/cmd/hyperdrive"
 	"github.com/hnkNkm/flareadm/cmd/kv"
+	"github.com/hnkNkm/flareadm/cmd/loadbalancer"
+	"github.com/hnkNkm/flareadm/cmd/logpush"
+	"github.com/hnkNkm/flareadm/cmd/logs"
+	"github.com/hnkNkm/flareadm/cmd/notifications"
 	"github.com/hnkNkm/flareadm/cmd/pagerule"
+	"github.com/hnkNkm/flareadm/cmd/pages"
 	"github.com/hnkNkm/flareadm/cmd/profile"
 	"github.com/hnkNkm/flareadm/cmd/queue"
 	"github.com/hnkNkm/flareadm/cmd/r2"
 	"github.com/hnkNkm/flareadm/cmd/redirect"
+	"github.com/hnkNkm/flareadm/cmd/registrar"
 	"github.com/hnkNkm/flareadm/cmd/ruleset"
 	"github.com/hnkNkm/flareadm/cmd/ssl"
 	"github.com/hnkNkm/flareadm/cmd/vectorize"
 	"github.com/hnkNkm/flareadm/cmd/waf"
+	"github.com/hnkNkm/flareadm/cmd/workers"
 	zerotrust "github.com/hnkNkm/flareadm/cmd/zero-trust"
 	"github.com/hnkNkm/flareadm/cmd/zone"
 	"github.com/hnkNkm/flareadm/internal/app"
@@ -97,6 +107,16 @@ func NewCommand(rt *app.Runtime) *cobra.Command {
 	root.AddCommand(hyperdrive.New(rt))
 	root.AddCommand(vectorize.New(rt))
 	root.AddCommand(zerotrust.New(rt))
+	root.AddCommand(workers.New(rt))
+	root.AddCommand(pages.New(rt))
+	root.AddCommand(logpush.New(rt))
+	root.AddCommand(healthcheck.New(rt))
+	root.AddCommand(loadbalancer.New(rt))
+	root.AddCommand(notifications.New(rt))
+	root.AddCommand(auditlog.New(rt))
+	root.AddCommand(analytics.New(rt))
+	root.AddCommand(logs.New(rt))
+	root.AddCommand(registrar.New(rt))
 	root.AddCommand(pagerule.New(rt))
 	root.AddCommand(cache.New(rt))
 	root.AddCommand(api.New(rt))

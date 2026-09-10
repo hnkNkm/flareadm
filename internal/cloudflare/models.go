@@ -732,3 +732,415 @@ type DevicePostureRule struct {
 	Input       json.RawMessage `json:"input,omitempty" yaml:"input,omitempty"`
 	Match       json.RawMessage `json:"match,omitempty" yaml:"match,omitempty"`
 }
+
+// ---- v0.5: Workers and Pages ----------------------------------------------
+
+// WorkerScript is the normalized Workers script metadata model.
+type WorkerScript struct {
+	ID                 string          `json:"id" yaml:"id"`
+	CreatedOn          string          `json:"created_on,omitempty" yaml:"created_on,omitempty"`
+	ModifiedOn         string          `json:"modified_on,omitempty" yaml:"modified_on,omitempty"`
+	Etag               string          `json:"etag,omitempty" yaml:"etag,omitempty"`
+	LastDeployedFrom   string          `json:"last_deployed_from,omitempty" yaml:"last_deployed_from,omitempty"`
+	MigrationTag       string          `json:"migration_tag,omitempty" yaml:"migration_tag,omitempty"`
+	CompatibilityDate  string          `json:"compatibility_date,omitempty" yaml:"compatibility_date,omitempty"`
+	CompatibilityFlags []string        `json:"compatibility_flags,omitempty" yaml:"compatibility_flags,omitempty"`
+	UsageModel         string          `json:"usage_model,omitempty" yaml:"usage_model,omitempty"`
+	HasModules         bool            `json:"has_modules,omitempty" yaml:"has_modules,omitempty"`
+	HasAssets          bool            `json:"has_assets,omitempty" yaml:"has_assets,omitempty"`
+	Logpush            bool            `json:"logpush,omitempty" yaml:"logpush,omitempty"`
+	Tags               []string        `json:"tags,omitempty" yaml:"tags,omitempty"`
+	Handlers           json.RawMessage `json:"handlers,omitempty" yaml:"handlers,omitempty"`
+	Routes             json.RawMessage `json:"routes,omitempty" yaml:"routes,omitempty"`
+	Observability      json.RawMessage `json:"observability,omitempty" yaml:"observability,omitempty"`
+	Placement          json.RawMessage `json:"placement,omitempty" yaml:"placement,omitempty"`
+	TailConsumers      json.RawMessage `json:"tail_consumers,omitempty" yaml:"tail_consumers,omitempty"`
+}
+
+// WorkerScriptSettings is the script-level settings model (the multipart upload
+// metadata surface).
+type WorkerScriptSettings struct {
+	CompatibilityDate  string          `json:"compatibility_date,omitempty" yaml:"compatibility_date,omitempty"`
+	CompatibilityFlags []string        `json:"compatibility_flags,omitempty" yaml:"compatibility_flags,omitempty"`
+	UsageModel         string          `json:"usage_model,omitempty" yaml:"usage_model,omitempty"`
+	Logpush            bool            `json:"logpush,omitempty" yaml:"logpush,omitempty"`
+	Tags               []string        `json:"tags,omitempty" yaml:"tags,omitempty"`
+	Annotations        json.RawMessage `json:"annotations,omitempty" yaml:"annotations,omitempty"`
+	Bindings           json.RawMessage `json:"bindings,omitempty" yaml:"bindings,omitempty"`
+	CacheOptions       json.RawMessage `json:"cache_options,omitempty" yaml:"cache_options,omitempty"`
+	Limits             json.RawMessage `json:"limits,omitempty" yaml:"limits,omitempty"`
+	Observability      json.RawMessage `json:"observability,omitempty" yaml:"observability,omitempty"`
+	Placement          json.RawMessage `json:"placement,omitempty" yaml:"placement,omitempty"`
+	TailConsumers      json.RawMessage `json:"tail_consumers,omitempty" yaml:"tail_consumers,omitempty"`
+}
+
+// WorkerSecret is a Workers secret's metadata. The value is never returned by
+// the API and is never modeled.
+type WorkerSecret struct {
+	Name      string          `json:"name" yaml:"name"`
+	Type      string          `json:"type,omitempty" yaml:"type,omitempty"`
+	Algorithm string          `json:"algorithm,omitempty" yaml:"algorithm,omitempty"`
+	Format    string          `json:"format,omitempty" yaml:"format,omitempty"`
+	Usages    []string        `json:"usages,omitempty" yaml:"usages,omitempty"`
+	KeyJwk    json.RawMessage `json:"key_jwk,omitempty" yaml:"key_jwk,omitempty"`
+}
+
+// WorkerVersion is a Workers script version.
+type WorkerVersion struct {
+	ID       string          `json:"id" yaml:"id"`
+	Number   int64           `json:"number,omitempty" yaml:"number,omitempty"`
+	Metadata json.RawMessage `json:"metadata,omitempty" yaml:"metadata,omitempty"`
+}
+
+// WorkerDeploymentVersion is one version share of a deployment.
+type WorkerDeploymentVersion struct {
+	VersionID  string  `json:"version_id,omitempty" yaml:"version_id,omitempty"`
+	Percentage float64 `json:"percentage,omitempty" yaml:"percentage,omitempty"`
+}
+
+// WorkerDeployment is a Workers script deployment.
+type WorkerDeployment struct {
+	ID          string                    `json:"id" yaml:"id"`
+	CreatedOn   string                    `json:"created_on,omitempty" yaml:"created_on,omitempty"`
+	Source      string                    `json:"source,omitempty" yaml:"source,omitempty"`
+	Strategy    string                    `json:"strategy,omitempty" yaml:"strategy,omitempty"`
+	AuthorEmail string                    `json:"author_email,omitempty" yaml:"author_email,omitempty"`
+	Versions    []WorkerDeploymentVersion `json:"versions,omitempty" yaml:"versions,omitempty"`
+	Annotations json.RawMessage           `json:"annotations,omitempty" yaml:"annotations,omitempty"`
+}
+
+// WorkerSchedule is the cron schedule of a script.
+type WorkerSchedule struct {
+	Crons []string `json:"crons,omitempty" yaml:"crons,omitempty"`
+}
+
+// WorkerRoute is a zone-scoped Workers route.
+type WorkerRoute struct {
+	ID      string `json:"id" yaml:"id"`
+	Pattern string `json:"pattern,omitempty" yaml:"pattern,omitempty"`
+	Script  string `json:"script,omitempty" yaml:"script,omitempty"`
+}
+
+// WorkerDomain is an account-scoped custom domain attached to a Worker.
+type WorkerDomain struct {
+	ID          string `json:"id" yaml:"id"`
+	Hostname    string `json:"hostname,omitempty" yaml:"hostname,omitempty"`
+	Service     string `json:"service,omitempty" yaml:"service,omitempty"`
+	Environment string `json:"environment,omitempty" yaml:"environment,omitempty"`
+	ZoneID      string `json:"zone_id,omitempty" yaml:"zone_id,omitempty"`
+	ZoneName    string `json:"zone_name,omitempty" yaml:"zone_name,omitempty"`
+	CertID      string `json:"cert_id,omitempty" yaml:"cert_id,omitempty"`
+}
+
+// WorkerSubdomain is the account-level workers.dev subdomain.
+type WorkerSubdomain struct {
+	Subdomain string `json:"subdomain,omitempty" yaml:"subdomain,omitempty"`
+}
+
+// WorkerScriptSubdomain is a script's workers.dev state.
+type WorkerScriptSubdomain struct {
+	Enabled         bool `json:"enabled" yaml:"enabled"`
+	PreviewsEnabled bool `json:"previews_enabled" yaml:"previews_enabled"`
+}
+
+// WorkerAccountSettings holds the account-level Workers defaults.
+type WorkerAccountSettings struct {
+	DefaultUsageModel string `json:"default_usage_model,omitempty" yaml:"default_usage_model,omitempty"`
+	GreenCompute      bool   `json:"green_compute,omitempty" yaml:"green_compute,omitempty"`
+}
+
+// PagesProject is the normalized Pages project model. Config objects are kept
+// raw so unmodeled fields survive.
+type PagesProject struct {
+	ID                   string          `json:"id" yaml:"id"`
+	Name                 string          `json:"name,omitempty" yaml:"name,omitempty"`
+	Subdomain            string          `json:"subdomain,omitempty" yaml:"subdomain,omitempty"`
+	ProductionBranch     string          `json:"production_branch,omitempty" yaml:"production_branch,omitempty"`
+	PreviewScriptName    string          `json:"preview_script_name,omitempty" yaml:"preview_script_name,omitempty"`
+	ProductionScriptName string          `json:"production_script_name,omitempty" yaml:"production_script_name,omitempty"`
+	Framework            string          `json:"framework,omitempty" yaml:"framework,omitempty"`
+	FrameworkVersion     string          `json:"framework_version,omitempty" yaml:"framework_version,omitempty"`
+	CreatedOn            string          `json:"created_on,omitempty" yaml:"created_on,omitempty"`
+	UsesFunctions        bool            `json:"uses_functions,omitempty" yaml:"uses_functions,omitempty"`
+	Domains              []string        `json:"domains,omitempty" yaml:"domains,omitempty"`
+	BuildConfig          json.RawMessage `json:"build_config,omitempty" yaml:"build_config,omitempty"`
+	DeploymentConfigs    json.RawMessage `json:"deployment_configs,omitempty" yaml:"deployment_configs,omitempty"`
+	Source               json.RawMessage `json:"source,omitempty" yaml:"source,omitempty"`
+	LatestDeployment     json.RawMessage `json:"latest_deployment,omitempty" yaml:"latest_deployment,omitempty"`
+	CanonicalDeployment  json.RawMessage `json:"canonical_deployment,omitempty" yaml:"canonical_deployment,omitempty"`
+}
+
+// PagesDeployment is a Pages deployment.
+type PagesDeployment struct {
+	ID                string          `json:"id" yaml:"id"`
+	ShortID           string          `json:"short_id,omitempty" yaml:"short_id,omitempty"`
+	ProjectID         string          `json:"project_id,omitempty" yaml:"project_id,omitempty"`
+	ProjectName       string          `json:"project_name,omitempty" yaml:"project_name,omitempty"`
+	Environment       string          `json:"environment,omitempty" yaml:"environment,omitempty"`
+	URL               string          `json:"url,omitempty" yaml:"url,omitempty"`
+	CreatedOn         string          `json:"created_on,omitempty" yaml:"created_on,omitempty"`
+	ModifiedOn        string          `json:"modified_on,omitempty" yaml:"modified_on,omitempty"`
+	IsSkipped         bool            `json:"is_skipped,omitempty" yaml:"is_skipped,omitempty"`
+	SkipReason        string          `json:"skip_reason,omitempty" yaml:"skip_reason,omitempty"`
+	UsesFunctions     bool            `json:"uses_functions,omitempty" yaml:"uses_functions,omitempty"`
+	Aliases           []string        `json:"aliases,omitempty" yaml:"aliases,omitempty"`
+	LatestStage       json.RawMessage `json:"latest_stage,omitempty" yaml:"latest_stage,omitempty"`
+	Stages            json.RawMessage `json:"stages,omitempty" yaml:"stages,omitempty"`
+	DeploymentTrigger json.RawMessage `json:"deployment_trigger,omitempty" yaml:"deployment_trigger,omitempty"`
+	BuildConfig       json.RawMessage `json:"build_config,omitempty" yaml:"build_config,omitempty"`
+	Source            json.RawMessage `json:"source,omitempty" yaml:"source,omitempty"`
+}
+
+// PagesProjectDomain is a custom domain of a Pages project.
+type PagesProjectDomain struct {
+	ID                   string          `json:"id" yaml:"id"`
+	DomainID             string          `json:"domain_id,omitempty" yaml:"domain_id,omitempty"`
+	Name                 string          `json:"name,omitempty" yaml:"name,omitempty"`
+	Status               string          `json:"status,omitempty" yaml:"status,omitempty"`
+	CertificateAuthority string          `json:"certificate_authority,omitempty" yaml:"certificate_authority,omitempty"`
+	ZoneTag              string          `json:"zone_tag,omitempty" yaml:"zone_tag,omitempty"`
+	CreatedOn            string          `json:"created_on,omitempty" yaml:"created_on,omitempty"`
+	ValidationData       json.RawMessage `json:"validation_data,omitempty" yaml:"validation_data,omitempty"`
+	VerificationData     json.RawMessage `json:"verification_data,omitempty" yaml:"verification_data,omitempty"`
+}
+
+// ---- v0.6 slice 1: Logpush, health checks, load balancing ------------------
+
+// LogpushJob is the normalized Logpush job model. The destination string is
+// deliberately not modeled: it embeds destination credentials and is only
+// available through --raw.
+type LogpushJob struct {
+	ID                      int64  `json:"id" yaml:"id"`
+	Name                    string `json:"name,omitempty" yaml:"name,omitempty"`
+	Dataset                 string `json:"dataset,omitempty" yaml:"dataset,omitempty"`
+	Enabled                 bool   `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	Frequency               string `json:"frequency,omitempty" yaml:"frequency,omitempty"`
+	Kind                    string `json:"kind,omitempty" yaml:"kind,omitempty"`
+	LastComplete            string `json:"last_complete,omitempty" yaml:"last_complete,omitempty"`
+	LastError               string `json:"last_error,omitempty" yaml:"last_error,omitempty"`
+	ErrorMessage            string `json:"error_message,omitempty" yaml:"error_message,omitempty"`
+	LogpullOptions          string `json:"logpull_options,omitempty" yaml:"logpull_options,omitempty"`
+	MaxUploadBytes          int64  `json:"max_upload_bytes,omitempty" yaml:"max_upload_bytes,omitempty"`
+	MaxUploadIntervalSecond int64  `json:"max_upload_interval_seconds,omitempty" yaml:"max_upload_interval_seconds,omitempty"`
+	MaxUploadRecords        int64  `json:"max_upload_records,omitempty" yaml:"max_upload_records,omitempty"`
+}
+
+// LogpushTransformer is a Logpush field transformer.
+type LogpushTransformer struct {
+	ID             int64  `json:"id" yaml:"id"`
+	Name           string `json:"name,omitempty" yaml:"name,omitempty"`
+	Description    string `json:"description,omitempty" yaml:"description,omitempty"`
+	Dataset        string `json:"dataset,omitempty" yaml:"dataset,omitempty"`
+	CreatedAt      string `json:"created_at,omitempty" yaml:"created_at,omitempty"`
+	UpdatedAt      string `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
+	AssociatedJobs int64  `json:"associated_jobs,omitempty" yaml:"associated_jobs,omitempty"`
+}
+
+// Healthcheck is the normalized zone health check model.
+type Healthcheck struct {
+	ID                 string          `json:"id" yaml:"id"`
+	Name               string          `json:"name,omitempty" yaml:"name,omitempty"`
+	Address            string          `json:"address,omitempty" yaml:"address,omitempty"`
+	Type               string          `json:"type,omitempty" yaml:"type,omitempty"`
+	Description        string          `json:"description,omitempty" yaml:"description,omitempty"`
+	Interval           int64           `json:"interval,omitempty" yaml:"interval,omitempty"`
+	Retries            int64           `json:"retries,omitempty" yaml:"retries,omitempty"`
+	Timeout            int64           `json:"timeout,omitempty" yaml:"timeout,omitempty"`
+	Status             string          `json:"status,omitempty" yaml:"status,omitempty"`
+	Suspended          bool            `json:"suspended,omitempty" yaml:"suspended,omitempty"`
+	FailureReason      string          `json:"failure_reason,omitempty" yaml:"failure_reason,omitempty"`
+	CheckRegions       []string        `json:"check_regions,omitempty" yaml:"check_regions,omitempty"`
+	ConsecutiveFails   int64           `json:"consecutive_fails,omitempty" yaml:"consecutive_fails,omitempty"`
+	ConsecutiveSuccess int64           `json:"consecutive_successes,omitempty" yaml:"consecutive_successes,omitempty"`
+	CreatedOn          string          `json:"created_on,omitempty" yaml:"created_on,omitempty"`
+	ModifiedOn         string          `json:"modified_on,omitempty" yaml:"modified_on,omitempty"`
+	HTTPConfig         json.RawMessage `json:"http_config,omitempty" yaml:"http_config,omitempty"`
+	TCPConfig          json.RawMessage `json:"tcp_config,omitempty" yaml:"tcp_config,omitempty"`
+}
+
+// LoadBalancer is the normalized load balancer model.
+type LoadBalancer struct {
+	ID              string          `json:"id" yaml:"id"`
+	Name            string          `json:"name,omitempty" yaml:"name,omitempty"`
+	Description     string          `json:"description,omitempty" yaml:"description,omitempty"`
+	Enabled         bool            `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	Proxied         bool            `json:"proxied,omitempty" yaml:"proxied,omitempty"`
+	SteeringPolicy  string          `json:"steering_policy,omitempty" yaml:"steering_policy,omitempty"`
+	SessionAffinity string          `json:"session_affinity,omitempty" yaml:"session_affinity,omitempty"`
+	TTL             int64           `json:"ttl,omitempty" yaml:"ttl,omitempty"`
+	ZoneName        string          `json:"zone_name,omitempty" yaml:"zone_name,omitempty"`
+	DefaultPools    []string        `json:"default_pools,omitempty" yaml:"default_pools,omitempty"`
+	FallbackPool    string          `json:"fallback_pool,omitempty" yaml:"fallback_pool,omitempty"`
+	CreatedOn       string          `json:"created_on,omitempty" yaml:"created_on,omitempty"`
+	ModifiedOn      string          `json:"modified_on,omitempty" yaml:"modified_on,omitempty"`
+	RegionPools     json.RawMessage `json:"region_pools,omitempty" yaml:"region_pools,omitempty"`
+	CountryPools    json.RawMessage `json:"country_pools,omitempty" yaml:"country_pools,omitempty"`
+	PopPools        json.RawMessage `json:"pop_pools,omitempty" yaml:"pop_pools,omitempty"`
+	Rules           json.RawMessage `json:"rules,omitempty" yaml:"rules,omitempty"`
+}
+
+// LoadBalancerOrigin is one pool origin.
+type LoadBalancerOrigin struct {
+	Name    string          `json:"name,omitempty" yaml:"name,omitempty"`
+	Address string          `json:"address,omitempty" yaml:"address,omitempty"`
+	Port    int64           `json:"port,omitempty" yaml:"port,omitempty"`
+	Weight  float64         `json:"weight,omitempty" yaml:"weight,omitempty"`
+	Enabled bool            `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	Header  json.RawMessage `json:"header,omitempty" yaml:"header,omitempty"`
+}
+
+// LoadBalancerPool is the normalized origin pool model.
+type LoadBalancerPool struct {
+	ID                string               `json:"id" yaml:"id"`
+	Name              string               `json:"name,omitempty" yaml:"name,omitempty"`
+	Description       string               `json:"description,omitempty" yaml:"description,omitempty"`
+	Enabled           bool                 `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	Monitor           string               `json:"monitor,omitempty" yaml:"monitor,omitempty"`
+	MinimumOrigins    int64                `json:"minimum_origins,omitempty" yaml:"minimum_origins,omitempty"`
+	NotificationEmail string               `json:"notification_email,omitempty" yaml:"notification_email,omitempty"`
+	CheckRegions      []string             `json:"check_regions,omitempty" yaml:"check_regions,omitempty"`
+	CreatedOn         string               `json:"created_on,omitempty" yaml:"created_on,omitempty"`
+	ModifiedOn        string               `json:"modified_on,omitempty" yaml:"modified_on,omitempty"`
+	DisabledAt        string               `json:"disabled_at,omitempty" yaml:"disabled_at,omitempty"`
+	Origins           []LoadBalancerOrigin `json:"origins,omitempty" yaml:"origins,omitempty"`
+}
+
+// LoadBalancerMonitor is the normalized monitor model.
+type LoadBalancerMonitor struct {
+	ID              string          `json:"id" yaml:"id"`
+	Type            string          `json:"type,omitempty" yaml:"type,omitempty"`
+	Description     string          `json:"description,omitempty" yaml:"description,omitempty"`
+	Method          string          `json:"method,omitempty" yaml:"method,omitempty"`
+	Path            string          `json:"path,omitempty" yaml:"path,omitempty"`
+	Port            int64           `json:"port,omitempty" yaml:"port,omitempty"`
+	Timeout         int64           `json:"timeout,omitempty" yaml:"timeout,omitempty"`
+	Retries         int64           `json:"retries,omitempty" yaml:"retries,omitempty"`
+	Interval        int64           `json:"interval,omitempty" yaml:"interval,omitempty"`
+	ExpectedBody    string          `json:"expected_body,omitempty" yaml:"expected_body,omitempty"`
+	ExpectedCodes   string          `json:"expected_codes,omitempty" yaml:"expected_codes,omitempty"`
+	FollowRedirects bool            `json:"follow_redirects,omitempty" yaml:"follow_redirects,omitempty"`
+	AllowInsecure   bool            `json:"allow_insecure,omitempty" yaml:"allow_insecure,omitempty"`
+	ProbeZone       string          `json:"probe_zone,omitempty" yaml:"probe_zone,omitempty"`
+	ConsecutiveUp   int64           `json:"consecutive_up,omitempty" yaml:"consecutive_up,omitempty"`
+	ConsecutiveDown int64           `json:"consecutive_down,omitempty" yaml:"consecutive_down,omitempty"`
+	CreatedOn       string          `json:"created_on,omitempty" yaml:"created_on,omitempty"`
+	ModifiedOn      string          `json:"modified_on,omitempty" yaml:"modified_on,omitempty"`
+	Header          json.RawMessage `json:"header,omitempty" yaml:"header,omitempty"`
+}
+
+// ---- v0.6 slice 2: notifications, audit logs, analytics, registrar --------
+
+// AlertingPolicy is a Cloudflare notification policy.
+type AlertingPolicy struct {
+	ID            string          `json:"id" yaml:"id"`
+	Name          string          `json:"name,omitempty" yaml:"name,omitempty"`
+	AlertType     string          `json:"alert_type,omitempty" yaml:"alert_type,omitempty"`
+	Enabled       bool            `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	Description   string          `json:"description,omitempty" yaml:"description,omitempty"`
+	AlertInterval string          `json:"alert_interval,omitempty" yaml:"alert_interval,omitempty"`
+	Created       string          `json:"created,omitempty" yaml:"created,omitempty"`
+	Modified      string          `json:"modified,omitempty" yaml:"modified,omitempty"`
+	Mechanisms    json.RawMessage `json:"mechanisms,omitempty" yaml:"mechanisms,omitempty"`
+	Filters       json.RawMessage `json:"filters,omitempty" yaml:"filters,omitempty"`
+}
+
+// AlertingWebhook is a webhook notification destination. The URL may embed a
+// token and is treated as a credential in diagnostics.
+type AlertingWebhook struct {
+	ID          string `json:"id" yaml:"id"`
+	Name        string `json:"name,omitempty" yaml:"name,omitempty"`
+	URL         string `json:"url,omitempty" yaml:"url,omitempty"`
+	Type        string `json:"type,omitempty" yaml:"type,omitempty"`
+	CreatedAt   string `json:"created_at,omitempty" yaml:"created_at,omitempty"`
+	LastSuccess string `json:"last_success,omitempty" yaml:"last_success,omitempty"`
+	LastFailure string `json:"last_failure,omitempty" yaml:"last_failure,omitempty"`
+}
+
+// AlertingPagerduty is a PagerDuty notification destination.
+type AlertingPagerduty struct {
+	ID   string `json:"id" yaml:"id"`
+	Name string `json:"name,omitempty" yaml:"name,omitempty"`
+}
+
+// AlertingSilence mutes one policy for a time window.
+type AlertingSilence struct {
+	ID        string `json:"id" yaml:"id"`
+	PolicyID  string `json:"policy_id,omitempty" yaml:"policy_id,omitempty"`
+	CreatedAt string `json:"created_at,omitempty" yaml:"created_at,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
+	StartTime string `json:"start_time,omitempty" yaml:"start_time,omitempty"`
+	EndTime   string `json:"end_time,omitempty" yaml:"end_time,omitempty"`
+}
+
+// AlertingHistory is one sent notification.
+type AlertingHistory struct {
+	ID            string          `json:"id" yaml:"id"`
+	Name          string          `json:"name,omitempty" yaml:"name,omitempty"`
+	AlertType     string          `json:"alert_type,omitempty" yaml:"alert_type,omitempty"`
+	Description   string          `json:"description,omitempty" yaml:"description,omitempty"`
+	PolicyID      string          `json:"policy_id,omitempty" yaml:"policy_id,omitempty"`
+	Mechanism     string          `json:"mechanism,omitempty" yaml:"mechanism,omitempty"`
+	MechanismType string          `json:"mechanism_type,omitempty" yaml:"mechanism_type,omitempty"`
+	Sent          string          `json:"sent,omitempty" yaml:"sent,omitempty"`
+	AlertBody     json.RawMessage `json:"alert_body,omitempty" yaml:"alert_body,omitempty"`
+}
+
+// AuditLogAction describes what happened in an audit log entry.
+type AuditLogAction struct {
+	Type   string `json:"type,omitempty" yaml:"type,omitempty"`
+	Result string `json:"result,omitempty" yaml:"result,omitempty"`
+}
+
+// AuditLogActor is who performed an audited change.
+type AuditLogActor struct {
+	ID    string `json:"id,omitempty" yaml:"id,omitempty"`
+	Email string `json:"email,omitempty" yaml:"email,omitempty"`
+	IP    string `json:"ip,omitempty" yaml:"ip,omitempty"`
+	Type  string `json:"type,omitempty" yaml:"type,omitempty"`
+}
+
+// AuditLogResource is the object an audited change touched.
+type AuditLogResource struct {
+	ID   string `json:"id,omitempty" yaml:"id,omitempty"`
+	Type string `json:"type,omitempty" yaml:"type,omitempty"`
+}
+
+// AuditLog is one account audit log entry.
+type AuditLog struct {
+	ID        string           `json:"id" yaml:"id"`
+	When      string           `json:"when,omitempty" yaml:"when,omitempty"`
+	Action    AuditLogAction   `json:"action,omitempty" yaml:"action,omitempty"`
+	Actor     AuditLogActor    `json:"actor,omitempty" yaml:"actor,omitempty"`
+	Resource  AuditLogResource `json:"resource,omitempty" yaml:"resource,omitempty"`
+	Interface string           `json:"interface,omitempty" yaml:"interface,omitempty"`
+	NewValue  string           `json:"newValue,omitempty" yaml:"newValue,omitempty"`
+	OldValue  string           `json:"oldValue,omitempty" yaml:"oldValue,omitempty"`
+	Metadata  json.RawMessage  `json:"metadata,omitempty" yaml:"metadata,omitempty"`
+}
+
+// RegistrarDomain is a domain in the registrar account inventory.
+type RegistrarDomain struct {
+	ID               string          `json:"id" yaml:"id"`
+	Available        bool            `json:"available,omitempty" yaml:"available,omitempty"`
+	CanRegister      bool            `json:"can_register,omitempty" yaml:"can_register,omitempty"`
+	CurrentRegistrar string          `json:"current_registrar,omitempty" yaml:"current_registrar,omitempty"`
+	Locked           bool            `json:"locked,omitempty" yaml:"locked,omitempty"`
+	SupportedTLD     bool            `json:"supported_tld,omitempty" yaml:"supported_tld,omitempty"`
+	CreatedAt        string          `json:"created_at,omitempty" yaml:"created_at,omitempty"`
+	UpdatedAt        string          `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
+	ExpiresAt        string          `json:"expires_at,omitempty" yaml:"expires_at,omitempty"`
+	RegistrantCont   json.RawMessage `json:"registrant_contact,omitempty" yaml:"registrant_contact,omitempty"`
+	RegistryStatuses json.RawMessage `json:"registry_statuses,omitempty" yaml:"registry_statuses,omitempty"`
+	TransferIn       json.RawMessage `json:"transfer_in,omitempty" yaml:"transfer_in,omitempty"`
+}
+
+// RegistrarRegistration is a registration workflow record.
+type RegistrarRegistration struct {
+	DomainName  string `json:"domain_name,omitempty" yaml:"domain_name,omitempty"`
+	Status      string `json:"status,omitempty" yaml:"status,omitempty"`
+	AutoRenew   bool   `json:"auto_renew,omitempty" yaml:"auto_renew,omitempty"`
+	Locked      bool   `json:"locked,omitempty" yaml:"locked,omitempty"`
+	PrivacyMode string `json:"privacy_mode,omitempty" yaml:"privacy_mode,omitempty"`
+	CreatedAt   string `json:"created_at,omitempty" yaml:"created_at,omitempty"`
+	ExpiresAt   string `json:"expires_at,omitempty" yaml:"expires_at,omitempty"`
+}
