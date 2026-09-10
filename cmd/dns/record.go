@@ -23,15 +23,6 @@ var recordTypes = []string{
 	"NAPTR", "NS", "OPENPGPKEY", "PTR", "SMIMEA", "SRV", "SSHFP", "SVCB", "TLSA", "TXT", "URI",
 }
 
-// dataOnlyTypes require the structured "data" payload instead of content
-// and are therefore not expressible through the record CRUD flags; the api
-// request escape hatch covers them.
-var dataOnlyTypes = map[string]bool{
-	"CAA": true, "CERT": true, "DNSKEY": true, "DS": true, "HTTPS": true,
-	"LOC": true, "NAPTR": true, "OPENPGPKEY": true, "SMIMEA": true, "SRV": true,
-	"SSHFP": true, "SVCB": true, "TLSA": true, "URI": true,
-}
-
 func recordRow(r cloudflare.DNSRecord) []string {
 	return []string{r.ID, r.Name, r.Type, truncate(r.Content, 48), ttlString(r.TTL), yesNo(r.Proxied)}
 }
@@ -107,23 +98,25 @@ func resolveZone(ctx context.Context, rt *app.Runtime) (*cloudflare.Client, stri
 
 // recordFlags are the shared record mutation flags.
 type recordFlags struct {
-	name     string
-	typ      string
-	content  string
-	ttl      int
-	proxied  bool
-	priority int
-	comment  string
+	name       string
+	typ        string
+	content    string
+	ttl        int
+	proxied    bool
+	priority   int
+	comment    string
+	structured *structuredFlagValues
 }
 
 func addRecordFlags(cmd *cobra.Command, rf *recordFlags) {
 	cmd.Flags().StringVar(&rf.name, "name", "", "record name (may be relative to the zone, e.g. api)")
-	cmd.Flags().StringVar(&rf.typ, "type", "", "record type (A, AAAA, CNAME, MX, TXT, ...)")
-	cmd.Flags().StringVar(&rf.content, "content", "", "record content (e.g. 192.0.2.10)")
+	cmd.Flags().StringVar(&rf.typ, "type", "", "record type (A, AAAA, CNAME, MX, TXT, or a structured type: CAA, CERT, DNSKEY, DS, HTTPS, LOC, NAPTR, OPENPGPKEY, SMIMEA, SRV, SSHFP, SVCB, TLSA, URI)")
+	cmd.Flags().StringVar(&rf.content, "content", "", "record content (e.g. 192.0.2.10); content-based types only")
 	cmd.Flags().IntVar(&rf.ttl, "ttl", 0, "time to live in seconds, or 1 for automatic")
 	cmd.Flags().BoolVar(&rf.proxied, "proxied", false, "proxy through Cloudflare (A/AAAA/CNAME only)")
-	cmd.Flags().IntVar(&rf.priority, "priority", 0, "priority (MX records)")
+	cmd.Flags().IntVar(&rf.priority, "priority", 0, "record priority (MX, URI: record-level; SRV, SVCB, HTTPS: data field)")
 	cmd.Flags().StringVar(&rf.comment, "comment", "", "record comment")
+	rf.structured = registerStructuredFlags(cmd)
 }
 
 // validateTTL enforces the Cloudflare TTL contract.
@@ -134,7 +127,38 @@ func validateTTL(ttl int) error {
 	return nil
 }
 
-// buildWrite assembles a record write from flags plus existing values.
+// computeTTL resolves the record TTL from flags, falling back to automatic
+// (1) on create and to the existing value on update.
+func computeTTL(cmd *cobra.Command, rf *recordFlags, existing *cloudflare.DNSRecord, forCreate bool) (float64, error) {
+	if cmd.Flags().Changed("ttl") {
+		if err := validateTTL(rf.ttl); err != nil {
+			return 0, err
+		}
+		return float64(rf.ttl), nil
+	}
+	if forCreate {
+		return 1, nil
+	}
+	return existing.TTL, nil
+}
+
+// computeComment resolves the record comment: explicit flag wins, otherwise
+// an existing comment is preserved on update.
+func computeComment(cmd *cobra.Command, rf *recordFlags, existing *cloudflare.DNSRecord, forCreate bool) *string {
+	if cmd.Flags().Changed("comment") {
+		v := rf.comment
+		return &v
+	}
+	if !forCreate && existing.Comment != "" {
+		v := existing.Comment
+		return &v
+	}
+	return nil
+}
+
+// buildWrite assembles a record write from flags plus existing values. It
+// dispatches to the structured-type builder for data-payload types
+// (CAA, SRV, TLSA, ...); content-based types keep the content path.
 func buildWrite(cmd *cobra.Command, rf *recordFlags, existing *cloudflare.DNSRecord, forCreate bool) (cloudflare.RecordWrite, error) {
 	changed := func(name string) bool { return cmd.Flags().Changed(name) }
 
@@ -158,9 +182,13 @@ func buildWrite(cmd *cobra.Command, rf *recordFlags, existing *cloudflare.DNSRec
 	if !contains(recordTypes, typ) {
 		return cloudflare.RecordWrite{}, errors.Usage("invalid record type %q", typ)
 	}
-	if dataOnlyTypes[typ] {
-		return cloudflare.RecordWrite{}, errors.Usage(
-			"record type %s uses a structured data payload that the record commands do not model; use 'flareadm api request'", typ)
+	if _, ok := structuredTypes[typ]; ok {
+		return buildStructuredWrite(cmd, rf, rf.structured, existing, forCreate, typ)
+	}
+	// Content-based types reject structured flags instead of ignoring them.
+	if bad := invalidStructuredFlag(cmd, typ); bad != "" {
+		return cloudflare.RecordWrite{}, errors.Usage("flag --%s is not valid for record type %s (valid for: %s)",
+			bad, typ, strings.Join(structuredFlagAllowed[bad], ", "))
 	}
 	if name == "" {
 		return cloudflare.RecordWrite{}, errors.Usage("record name is required (--name)")
@@ -169,16 +197,9 @@ func buildWrite(cmd *cobra.Command, rf *recordFlags, existing *cloudflare.DNSRec
 		return cloudflare.RecordWrite{}, errors.Usage("record content is required (--content)")
 	}
 
-	ttl := float64(rf.ttl)
-	switch {
-	case changed("ttl"):
-		if err := validateTTL(rf.ttl); err != nil {
-			return cloudflare.RecordWrite{}, err
-		}
-	case forCreate:
-		ttl = 1
-	default:
-		ttl = existing.TTL
+	ttl, err := computeTTL(cmd, rf, existing, forCreate)
+	if err != nil {
+		return cloudflare.RecordWrite{}, err
 	}
 
 	var proxied *bool
@@ -217,22 +238,12 @@ func buildWrite(cmd *cobra.Command, rf *recordFlags, existing *cloudflare.DNSRec
 			}
 		}
 	case changed("priority"):
-		return cloudflare.RecordWrite{}, errors.Usage("--priority is only valid for MX records")
-	}
-
-	var comment *string
-	switch {
-	case changed("comment"):
-		v := rf.comment
-		comment = &v
-	case !forCreate && existing.Comment != "":
-		v := existing.Comment
-		comment = &v
+		return cloudflare.RecordWrite{}, errors.Usage("--priority is only valid for MX and structured SRV/URI/SVCB/HTTPS records")
 	}
 
 	return cloudflare.RecordWrite{
 		Name: name, Type: typ, Content: content, TTL: ttl,
-		Proxied: proxied, Priority: priority, Comment: comment,
+		Proxied: proxied, Priority: priority, Comment: computeComment(cmd, rf, existing, forCreate),
 	}, nil
 }
 
@@ -292,8 +303,12 @@ func newRecordCreate(rt *app.Runtime) *cobra.Command {
 		Use:   "create",
 		Short: "Create a DNS record",
 		Long: "Create a DNS record in a zone.\n\n" +
-			"Example:\n" +
-			"  flareadm dns record create --zone example.com --type A --name api --content 192.0.2.10 --proxied",
+			"Content-based example:\n" +
+			"  flareadm dns record create --zone example.com --type A --name api --content 192.0.2.10 --proxied\n\n" +
+			"Structured example:\n" +
+			"  flareadm dns record create --zone example.com --type SRV --name _sip._tcp \\\n" +
+			"    --priority 10 --weight 5 --port 5060 --target sip.example.com\n\n" +
+			structuredHelpSection(),
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			write, err := buildWrite(cmd, &rf, nil, true)
@@ -325,15 +340,20 @@ func newRecordUpdate(rt *app.Runtime) *cobra.Command {
 		Use:   "update RECORD_ID",
 		Short: "Update a DNS record",
 		Long: "Update a DNS record by id. Provided flags override the existing record;\n" +
-			"omitted fields keep their current values.",
+			"omitted fields keep their current values (including structured data fields\n" +
+			"when the record type is unchanged).\n\n" +
+			structuredHelpSection(),
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			changed := false
-			for _, name := range []string{"name", "type", "content", "ttl", "proxied", "priority", "comment"} {
+			for _, name := range structuredFlagOrder() {
+				changed = changed || cmd.Flags().Changed(name)
+			}
+			for _, name := range []string{"name", "type", "content", "ttl", "proxied", "comment"} {
 				changed = changed || cmd.Flags().Changed(name)
 			}
 			if !changed {
-				return errors.Usage("nothing to update; pass at least one of --name, --type, --content, --ttl, --proxied, --priority, --comment")
+				return errors.Usage("nothing to update; pass at least one record flag (see 'dns record update --help')")
 			}
 			client, zoneID, err := resolveZone(cmd.Context(), rt)
 			if err != nil {
@@ -344,11 +364,6 @@ func newRecordUpdate(rt *app.Runtime) *cobra.Command {
 				return err
 			}
 			existing := existingRes.Item
-			if len(existing.Data) > 0 {
-				return errors.Usage(
-					"record %s uses a structured data payload that the record commands do not model; use 'flareadm api request'",
-					existing.ID)
-			}
 			write, err := buildWrite(cmd, &rf, &existing, false)
 			if err != nil {
 				return err

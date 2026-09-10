@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -997,4 +998,309 @@ func atomicAdd(p *int32, v int32) {
 	mu.Lock()
 	defer mu.Unlock()
 	*p += v
+}
+
+// ---- structured (data payload) DNS record types --------------------------
+
+// structuredCase drives both the payload assertion and the missing-required
+// flag error case for one structured type.
+type structuredCase struct {
+	typ      string
+	args     []string       // required flags for this type
+	data     map[string]any // expected "data" object in the request body
+	topPrio  *float64       // expected record-level priority (URI only)
+	dropArg  string         // flag plus value dropped for the required-field case
+	dropFlag string         // flag name expected in the error message
+}
+
+func f64(v float64) *float64 { return &v }
+
+var structuredCases = []structuredCase{
+	{
+		typ:     "CAA",
+		args:    []string{"--flags", "0", "--tag", "issue", "--value", "letsencrypt.org"},
+		data:    map[string]any{"flags": float64(0), "tag": "issue", "value": "letsencrypt.org"},
+		dropArg: "--tag", dropFlag: "tag",
+	},
+	{
+		typ:     "CERT",
+		args:    []string{"--algorithm", "8", "--cert-type", "1", "--certificate", "MIICert", "--key-tag", "12345"},
+		data:    map[string]any{"algorithm": float64(8), "type": float64(1), "certificate": "MIICert", "key_tag": float64(12345)},
+		dropArg: "--key-tag", dropFlag: "key-tag",
+	},
+	{
+		typ:     "DNSKEY",
+		args:    []string{"--flags", "257", "--protocol", "3", "--algorithm", "13", "--public-key", "AAAA"},
+		data:    map[string]any{"flags": float64(257), "protocol": float64(3), "algorithm": float64(13), "public_key": "AAAA"},
+		dropArg: "--public-key", dropFlag: "public-key",
+	},
+	{
+		typ:     "DS",
+		args:    []string{"--key-tag", "12345", "--algorithm", "13", "--digest-type", "2", "--digest", "DEADBEEF"},
+		data:    map[string]any{"key_tag": float64(12345), "algorithm": float64(13), "digest_type": float64(2), "digest": "DEADBEEF"},
+		dropArg: "--digest", dropFlag: "digest",
+	},
+	{
+		typ:     "HTTPS",
+		args:    []string{"--priority", "1", "--target", "svc.example.com", "--value", "alpn=h2"},
+		data:    map[string]any{"priority": float64(1), "target": "svc.example.com", "value": "alpn=h2"},
+		dropArg: "--value", dropFlag: "value",
+	},
+	{
+		typ: "LOC",
+		args: []string{
+			"--lat-degrees", "37", "--lat-minutes", "46", "--lat-seconds", "30", "--lat-direction", "N",
+			"--long-degrees", "122", "--long-minutes", "25", "--long-seconds", "10", "--long-direction", "W",
+			"--altitude", "15.5", "--precision-horz", "10", "--precision-vert", "2",
+		},
+		data: map[string]any{
+			"lat_degrees": float64(37), "lat_minutes": float64(46), "lat_seconds": float64(30), "lat_direction": "N",
+			"long_degrees": float64(122), "long_minutes": float64(25), "long_seconds": float64(10), "long_direction": "W",
+			"altitude": float64(15.5), "precision_horz": float64(10), "precision_vert": float64(2),
+		},
+		dropArg: "--altitude", dropFlag: "altitude",
+	},
+	{
+		typ:     "NAPTR",
+		args:    []string{"--order", "100", "--preference", "10", "--flags", "S", "--service", "SIP+D2U", "--regex", "", "--replacement", "."},
+		data:    map[string]any{"order": float64(100), "preference": float64(10), "flags": "S", "service": "SIP+D2U", "regex": "", "replacement": "."},
+		dropArg: "--replacement", dropFlag: "replacement",
+	},
+	{
+		typ:     "SMIMEA",
+		args:    []string{"--usage", "3", "--selector", "1", "--matching-type", "1", "--certificate", "ABCD"},
+		data:    map[string]any{"usage": float64(3), "selector": float64(1), "matching_type": float64(1), "certificate": "ABCD"},
+		dropArg: "--certificate", dropFlag: "certificate",
+	},
+	{
+		typ:     "SRV",
+		args:    []string{"--priority", "10", "--weight", "5", "--port", "5060", "--target", "sip.example.com"},
+		data:    map[string]any{"priority": float64(10), "weight": float64(5), "port": float64(5060), "target": "sip.example.com"},
+		dropArg: "--target", dropFlag: "target",
+	},
+	{
+		typ:     "SSHFP",
+		args:    []string{"--algorithm", "4", "--fingerprint-type", "2", "--fingerprint", "AABBCC"},
+		data:    map[string]any{"algorithm": float64(4), "type": float64(2), "fingerprint": "AABBCC"},
+		dropArg: "--fingerprint", dropFlag: "fingerprint",
+	},
+	{
+		typ:     "SVCB",
+		args:    []string{"--priority", "1", "--target", "svc.example.com", "--value", "alpn=h2"},
+		data:    map[string]any{"priority": float64(1), "target": "svc.example.com", "value": "alpn=h2"},
+		dropArg: "--value", dropFlag: "value",
+	},
+	{
+		typ:     "TLSA",
+		args:    []string{"--usage", "3", "--selector", "1", "--matching-type", "1", "--certificate", "ABCD"},
+		data:    map[string]any{"usage": float64(3), "selector": float64(1), "matching_type": float64(1), "certificate": "ABCD"},
+		dropArg: "--certificate", dropFlag: "certificate",
+	},
+	{
+		typ:     "URI",
+		args:    []string{"--priority", "10", "--weight", "1", "--target", "https://example.com/"},
+		data:    map[string]any{"weight": float64(1), "target": "https://example.com/"},
+		topPrio: f64(10),
+		dropArg: "--priority", dropFlag: "priority",
+	},
+}
+
+func decodeRequestBody(t *testing.T, body string) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal([]byte(body), &m); err != nil {
+		t.Fatalf("request body is not JSON: %v\n%s", err, body)
+	}
+	return m
+}
+
+func TestDNSRecordStructuredTypePayloads(t *testing.T) {
+	api := defaultAPI(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+
+	for _, tc := range structuredCases {
+		t.Run(tc.typ, func(t *testing.T) {
+			args := []string{"dns", "record", "create", "--zone", zoneID, "--type", tc.typ, "--name", "r.example.com"}
+			args = append(args, tc.args...)
+			args = append(args, "--endpoint-url", ep)
+			res := runCLI(t, args...)
+			if res.code != 0 {
+				t.Fatalf("create %s: code=%d stderr=%q", tc.typ, res.code, res.stderr)
+			}
+			got := decodeRequestBody(t, api.last().Body)
+			want := map[string]any{
+				"name": "r.example.com",
+				"type": tc.typ,
+				"ttl":  float64(1),
+				"data": tc.data,
+			}
+			if tc.topPrio != nil {
+				want["priority"] = *tc.topPrio
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("payload mismatch\n got: %#v\nwant: %#v", got, want)
+			}
+			if _, hasContent := got["content"]; hasContent {
+				t.Fatalf("structured payload must not carry content: %v", got)
+			}
+
+			// Required-field validation: drop one flag, expect exit 2
+			// naming it and no new API request.
+			before := api.count()
+			reduced := make([]string, 0, len(args))
+			skipNext := false
+			for i, a := range args {
+				if skipNext {
+					skipNext = false
+					continue
+				}
+				if a == tc.dropArg && i+1 < len(args) {
+					skipNext = true
+					continue
+				}
+				reduced = append(reduced, a)
+			}
+			res = runCLI(t, reduced...)
+			if res.code != errors.CodeInvalid {
+				t.Fatalf("missing %s: code=%d, want 2 (stderr=%q)", tc.dropArg, res.code, res.stderr)
+			}
+			if !strings.Contains(res.stderr, "--"+tc.dropFlag) {
+				t.Fatalf("missing %s error should name --%s: %q", tc.dropArg, tc.dropFlag, res.stderr)
+			}
+			if api.count() != before {
+				t.Fatalf("validation failure still sent a request")
+			}
+		})
+	}
+}
+
+func TestDNSRecordStructuredValidation(t *testing.T) {
+	api := defaultAPI(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(typ string, extra ...string) []string {
+		args := []string{"dns", "record", "create", "--zone", zoneID, "--type", typ, "--name", "r.example.com"}
+		return append(append(args, extra...), "--endpoint-url", ep)
+	}
+
+	cases := []struct {
+		name string
+		args []string
+		want string // substring expected in stderr
+	}{
+		{"content type with structured flag",
+			base("A", "--content", "192.0.2.1", "--target", "x.example.com"), "--target"},
+		{"structured type with content",
+			base("SRV", "--content", "0 5 5060 sip.example.com"), "--content"},
+		{"structured flag of another type",
+			base("SRV", "--priority", "10", "--weight", "5", "--port", "5060", "--target", "sip.example.com", "--usage", "3"), "--usage"},
+		{"non-numeric flags for numeric field",
+			base("CAA", "--flags", "abc", "--tag", "issue", "--value", "letsencrypt.org"), "--flags"},
+		{"bad LOC direction",
+			base("LOC", "--lat-degrees", "37", "--lat-minutes", "46", "--lat-seconds", "30", "--lat-direction", "X",
+				"--long-degrees", "122", "--long-minutes", "25", "--long-seconds", "10", "--long-direction", "W", "--altitude", "15"), "--lat-direction"},
+		{"priority on content type",
+			base("A", "--content", "192.0.2.1", "--priority", "10"), "--priority"},
+		{"proxied on structured type",
+			base("SRV", "--priority", "10", "--weight", "5", "--port", "5060", "--target", "sip.example.com", "--proxied"), "--proxied"},
+		{"unknown record type",
+			base("BOGUS", "--content", "x"), "invalid record type"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			before := api.count()
+			res := runCLI(t, tc.args...)
+			if res.code != errors.CodeInvalid {
+				t.Fatalf("code=%d, want 2 (stderr=%q)", res.code, res.stderr)
+			}
+			if !strings.Contains(res.stderr, tc.want) {
+				t.Fatalf("stderr %q should mention %q", res.stderr, tc.want)
+			}
+			if api.count() != before {
+				t.Fatalf("invalid input still sent a request")
+			}
+		})
+	}
+}
+
+func TestDNSRecordContentRegressionsPreserved(t *testing.T) {
+	api := defaultAPI(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+
+	// MX keeps its record-level priority behavior.
+	res := runCLI(t, "dns", "record", "create", "--zone", zoneID, "--type", "MX", "--name", "example.com",
+		"--content", "mx.example.com", "--priority", "10", "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("MX: code=%d stderr=%q", res.code, res.stderr)
+	}
+	want := map[string]any{
+		"name": "example.com", "type": "MX", "ttl": float64(1),
+		"content": "mx.example.com", "priority": float64(10),
+	}
+	if got := decodeRequestBody(t, api.last().Body); !reflect.DeepEqual(got, want) {
+		t.Fatalf("MX payload mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+
+	// OPENPGPKEY is content-based in the SDK (no data object).
+	res = runCLI(t, "dns", "record", "create", "--zone", zoneID, "--type", "OPENPGPKEY", "--name", "key.example.com",
+		"--content", "-----BEGIN PGP PUBLIC KEY BLOCK-----", "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("OPENPGPKEY: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if got := decodeRequestBody(t, api.last().Body); got["content"] != "-----BEGIN PGP PUBLIC KEY BLOCK-----" || got["data"] != nil {
+		t.Fatalf("OPENPGPKEY payload: %#v", got)
+	}
+}
+
+func TestDNSRecordStructuredUpdateMerge(t *testing.T) {
+	existing := map[string]any{
+		"id": recordID, "zone_id": zoneID, "zone_name": "example.com",
+		"name": "_sip._tcp.example.com", "type": "SRV", "content": "",
+		"ttl": 300, "proxied": false,
+		"data": map[string]any{"port": 5060, "priority": 10, "target": "sip.example.com", "weight": 5},
+	}
+	api := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		switch {
+		case method == "GET" && path == "/zones/"+zoneID+"/dns_records/"+recordID:
+			return 200, envelope(existing)
+		case method == "PUT" && path == "/zones/"+zoneID+"/dns_records/"+recordID:
+			return 200, envelope(existing)
+		}
+		s, b := apiErr(404, 0, "nope")
+		return s, b
+	})
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+
+	res := runCLI(t, "dns", "record", "update", recordID, "--zone", zoneID, "--port", "5061", "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("update: code=%d stderr=%q", res.code, res.stderr)
+	}
+	got := decodeRequestBody(t, api.last().Body)
+	want := map[string]any{
+		"name": "_sip._tcp.example.com", "type": "SRV", "ttl": float64(300),
+		"data": map[string]any{"port": float64(5061), "priority": float64(10), "target": "sip.example.com", "weight": float64(5)},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("merged payload mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+	if _, hasContent := got["content"]; hasContent {
+		t.Fatalf("merged structured payload must not carry content: %#v", got)
+	}
+
+	// Changing record families cannot inherit structured fields: required
+	// flags are enforced again.
+	api.mu.Lock()
+	api.reqs = nil
+	api.mu.Unlock()
+	res = runCLI(t, "dns", "record", "update", recordID, "--zone", zoneID, "--type", "CAA", "--endpoint-url", ep)
+	if res.code != errors.CodeInvalid || !strings.Contains(res.stderr, "--flags") {
+		t.Fatalf("type-change validation: code=%d stderr=%q", res.code, res.stderr)
+	}
 }

@@ -82,7 +82,9 @@ func normalizeRecord(r *DNSRecord) {
 
 // RecordWrite is the full write model for record create/update. Proxied and
 // Priority are pointers so "unset" is distinguishable from an explicit
-// value.
+// value. Data carries the structured payload for record types that use
+// Cloudflare's data object (CAA, SRV, TLSA, ...); it is nil for
+// content-based types.
 type RecordWrite struct {
 	Name     string
 	Type     string
@@ -91,6 +93,7 @@ type RecordWrite struct {
 	Proxied  *bool
 	Priority *float64
 	Comment  *string
+	Data     map[string]any
 }
 
 // proxiableTypes are the record types that accept the proxied flag.
@@ -98,13 +101,14 @@ var proxiableTypes = map[string]bool{"A": true, "AAAA": true, "CNAME": true}
 
 // wireRecord is the JSON body sent to the API.
 type wireRecord struct {
-	Name     string   `json:"name"`
-	Type     string   `json:"type"`
-	Content  string   `json:"content,omitempty"`
-	TTL      float64  `json:"ttl"`
-	Proxied  *bool    `json:"proxied,omitempty"`
-	Priority *float64 `json:"priority,omitempty"`
-	Comment  *string  `json:"comment,omitempty"`
+	Name     string         `json:"name"`
+	Type     string         `json:"type"`
+	Content  string         `json:"content,omitempty"`
+	TTL      float64        `json:"ttl"`
+	Proxied  *bool          `json:"proxied,omitempty"`
+	Priority *float64       `json:"priority,omitempty"`
+	Comment  *string        `json:"comment,omitempty"`
+	Data     map[string]any `json:"data,omitempty"`
 }
 
 // marshalRecordWrite validates and serializes a record write body.
@@ -115,13 +119,13 @@ func marshalRecordWrite(rw RecordWrite) ([]byte, error) {
 	if rw.Type == "" {
 		return nil, errors.Usage("record type is required")
 	}
-	if rw.Content == "" {
+	if rw.Data == nil && rw.Content == "" {
 		return nil, errors.Usage("record content is required")
 	}
 	if rw.TTL <= 0 {
 		return nil, errors.Usage("record ttl must be 1 (automatic) or between 60 and 86400")
 	}
-	w := wireRecord{Name: rw.Name, Type: rw.Type, Content: rw.Content, TTL: rw.TTL}
+	w := wireRecord{Name: rw.Name, Type: rw.Type, Content: rw.Content, TTL: rw.TTL, Data: rw.Data}
 	if proxiableTypes[rw.Type] && rw.Proxied != nil {
 		w.Proxied = rw.Proxied
 	}
