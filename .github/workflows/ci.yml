@@ -26,6 +26,9 @@ jobs:
       - name: Test
         run: nix develop -c go test ./...
 
+      - name: Test (race)
+        run: nix develop -c go test -race ./...
+
       - name: Lint
         run: nix develop -c golangci-lint run
 

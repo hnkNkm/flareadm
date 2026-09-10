@@ -277,6 +277,22 @@ Options:
 
 Pagination behavior must not differ arbitrarily between services.
 
+### Termination
+
+Auto-pagination stops deterministically at the first of:
+
+- an empty page (the API returned no items);
+- a short page (fewer items than `--page-size`);
+- `result_info.total_pages` reached (when the API supplies it);
+- cursor exhaustion (cursor-paginated endpoints);
+- `--max-items` reached;
+- `--no-paginate`, which fetches only the first page.
+
+If none of these is reached, a safety cap of 1000 pages bounds the loop. Exceeding it never
+hangs or pages forever: the command exits 1 with a diagnostic on stderr
+(`pagination safety limit exceeded after 1000 pages …`) advising `--max-items`, `--page-size`
+or `--no-paginate`.
+
 ## Retry and rate-limit behavior
 
 FlareADM SHALL:
