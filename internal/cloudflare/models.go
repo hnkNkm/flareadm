@@ -463,3 +463,272 @@ type VectorizeMetadataIndex struct {
 	PropertyName string `json:"propertyName" yaml:"propertyName"`
 	IndexType    string `json:"indexType,omitempty" yaml:"indexType,omitempty"`
 }
+
+// ---- v0.4 slice 1: Zero Trust tunnels and organization -------------------
+
+// Tunnel is the normalized Cloudflare Tunnel (cloudflared) model.
+type Tunnel struct {
+	ID              string             `json:"id" yaml:"id"`
+	Name            string             `json:"name" yaml:"name"`
+	Status          string             `json:"status,omitempty" yaml:"status,omitempty"`
+	Type            string             `json:"tun_type,omitempty" yaml:"tun_type,omitempty"`
+	ConfigSrc       string             `json:"config_src,omitempty" yaml:"config_src,omitempty"`
+	RemoteConfig    bool               `json:"remote_config,omitempty" yaml:"remote_config,omitempty"`
+	Connections     []TunnelConnection `json:"connections,omitempty" yaml:"connections,omitempty"`
+	CreatedAt       string             `json:"created_at,omitempty" yaml:"created_at,omitempty"`
+	DeletedAt       string             `json:"deleted_at,omitempty" yaml:"deleted_at,omitempty"`
+	ConnsActiveAt   string             `json:"conns_active_at,omitempty" yaml:"conns_active_at,omitempty"`
+	ConnsInactiveAt string             `json:"conns_inactive_at,omitempty" yaml:"conns_inactive_at,omitempty"`
+}
+
+// TunnelConnection is one cloudflared connector connection.
+type TunnelConnection struct {
+	ID            string          `json:"id" yaml:"id"`
+	Arch          string          `json:"arch,omitempty" yaml:"arch,omitempty"`
+	ConfigVersion int64           `json:"config_version,omitempty" yaml:"config_version,omitempty"`
+	Features      []string        `json:"features,omitempty" yaml:"features,omitempty"`
+	RunAt         string          `json:"run_at,omitempty" yaml:"run_at,omitempty"`
+	Conns         json.RawMessage `json:"conns,omitempty" yaml:"conns,omitempty"`
+}
+
+// TunnelConfiguration is the tunnel configuration payload. Config is kept
+// as raw JSON so unknown fields survive updates.
+type TunnelConfiguration struct {
+	Config json.RawMessage `json:"config,omitempty" yaml:"config,omitempty"`
+}
+
+// TunnelRoute is a Zero Trust private network route (teamnet).
+type TunnelRoute struct {
+	ID               string `json:"id" yaml:"id"`
+	Network          string `json:"network,omitempty" yaml:"network,omitempty"`
+	TunnelID         string `json:"tunnel_id,omitempty" yaml:"tunnel_id,omitempty"`
+	TunnelName       string `json:"tunnel_name,omitempty" yaml:"tunnel_name,omitempty"`
+	Comment          string `json:"comment,omitempty" yaml:"comment,omitempty"`
+	VirtualNetworkID string `json:"virtual_network_id,omitempty" yaml:"virtual_network_id,omitempty"`
+	CreatedAt        string `json:"created_at,omitempty" yaml:"created_at,omitempty"`
+	DeletedAt        string `json:"deleted_at,omitempty" yaml:"deleted_at,omitempty"`
+}
+
+// ZeroTrustOrganization is the normalized account Zero Trust organization.
+type ZeroTrustOrganization struct {
+	Name                           string `json:"name,omitempty" yaml:"name,omitempty"`
+	AuthDomain                     string `json:"auth_domain,omitempty" yaml:"auth_domain,omitempty"`
+	SessionDuration                string `json:"session_duration,omitempty" yaml:"session_duration,omitempty"`
+	IsUIReadOnly                   bool   `json:"is_ui_read_only,omitempty" yaml:"is_ui_read_only,omitempty"`
+	UIReadOnlyToggleReason         string `json:"ui_read_only_toggle_reason,omitempty" yaml:"ui_read_only_toggle_reason,omitempty"`
+	AllowAuthenticateViaWARP       bool   `json:"allow_authenticate_via_warp,omitempty" yaml:"allow_authenticate_via_warp,omitempty"`
+	AutoRedirectToIdentity         bool   `json:"auto_redirect_to_identity,omitempty" yaml:"auto_redirect_to_identity,omitempty"`
+	DenyUnmatchedRequests          bool   `json:"deny_unmatched_requests,omitempty" yaml:"deny_unmatched_requests,omitempty"`
+	MFARequiredForAllApps          bool   `json:"mfa_required_for_all_apps,omitempty" yaml:"mfa_required_for_all_apps,omitempty"`
+	WARPAuthNonBrowser401          bool   `json:"warp_auth_non_browser_401,omitempty" yaml:"warp_auth_non_browser_401,omitempty"`
+	WARPAuthSessionDuration        string `json:"warp_auth_session_duration,omitempty" yaml:"warp_auth_session_duration,omitempty"`
+	UserSeatExpirationInactiveTime string `json:"user_seat_expiration_inactive_time,omitempty" yaml:"user_seat_expiration_inactive_time,omitempty"`
+}
+
+// ---- v0.4 slice 2: Zero Trust Access --------------------------------------
+
+// AccessApplication is the normalized Access application model.
+type AccessApplication struct {
+	ID                      string          `json:"id" yaml:"id"`
+	Name                    string          `json:"name,omitempty" yaml:"name,omitempty"`
+	Domain                  string          `json:"domain,omitempty" yaml:"domain,omitempty"`
+	Type                    string          `json:"type,omitempty" yaml:"type,omitempty"`
+	AUD                     string          `json:"aud,omitempty" yaml:"aud,omitempty"`
+	SessionDuration         string          `json:"session_duration,omitempty" yaml:"session_duration,omitempty"`
+	AllowedIdPs             []string        `json:"allowed_idps,omitempty" yaml:"allowed_idps,omitempty"`
+	AutoRedirectToIdentity  bool            `json:"auto_redirect_to_identity,omitempty" yaml:"auto_redirect_to_identity,omitempty"`
+	AppLauncherVisible      bool            `json:"app_launcher_visible,omitempty" yaml:"app_launcher_visible,omitempty"`
+	SkipInterstitial        bool            `json:"skip_interstitial,omitempty" yaml:"skip_interstitial,omitempty"`
+	EnableBindingCookie     bool            `json:"enable_binding_cookie,omitempty" yaml:"enable_binding_cookie,omitempty"`
+	HTTPOnlyCookieAttribute bool            `json:"http_only_cookie_attribute,omitempty" yaml:"http_only_cookie_attribute,omitempty"`
+	SameSiteCookieAttribute string          `json:"same_site_cookie_attribute,omitempty" yaml:"same_site_cookie_attribute,omitempty"`
+	ServiceAuth401Redirect  bool            `json:"service_auth_401_redirect,omitempty" yaml:"service_auth_401_redirect,omitempty"`
+	CustomDenyURL           string          `json:"custom_deny_url,omitempty" yaml:"custom_deny_url,omitempty"`
+	CustomDenyMessage       string          `json:"custom_deny_message,omitempty" yaml:"custom_deny_message,omitempty"`
+	LogoURL                 string          `json:"logo_url,omitempty" yaml:"logo_url,omitempty"`
+	SelfHostedDomains       []string        `json:"self_hosted_domains,omitempty" yaml:"self_hosted_domains,omitempty"`
+	Tags                    []string        `json:"tags,omitempty" yaml:"tags,omitempty"`
+	Policies                json.RawMessage `json:"policies,omitempty" yaml:"policies,omitempty"`
+	SaaSApp                 json.RawMessage `json:"saas_app,omitempty" yaml:"saas_app,omitempty"`
+	CreatedAt               string          `json:"created_at,omitempty" yaml:"created_at,omitempty"`
+	UpdatedAt               string          `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
+}
+
+// AccessPolicy is the normalized Access policy model (reusable account-level
+// policies and application-scoped policies share it).
+type AccessPolicy struct {
+	ID                           string          `json:"id" yaml:"id"`
+	Name                         string          `json:"name,omitempty" yaml:"name,omitempty"`
+	Decision                     string          `json:"decision,omitempty" yaml:"decision,omitempty"`
+	Precedence                   int64           `json:"precedence,omitempty" yaml:"precedence,omitempty"`
+	SessionDuration              string          `json:"session_duration,omitempty" yaml:"session_duration,omitempty"`
+	ApprovalRequired             bool            `json:"approval_required,omitempty" yaml:"approval_required,omitempty"`
+	IsolationRequired            bool            `json:"isolation_required,omitempty" yaml:"isolation_required,omitempty"`
+	PurposeJustificationRequired bool            `json:"purpose_justification_required,omitempty" yaml:"purpose_justification_required,omitempty"`
+	PurposeJustificationPrompt   string          `json:"purpose_justification_prompt,omitempty" yaml:"purpose_justification_prompt,omitempty"`
+	Include                      json.RawMessage `json:"include,omitempty" yaml:"include,omitempty"`
+	Exclude                      json.RawMessage `json:"exclude,omitempty" yaml:"exclude,omitempty"`
+	Require                      json.RawMessage `json:"require,omitempty" yaml:"require,omitempty"`
+	AppCount                     int64           `json:"app_count,omitempty" yaml:"app_count,omitempty"`
+	Reusable                     any             `json:"reusable,omitempty" yaml:"reusable,omitempty"`
+	CreatedAt                    string          `json:"created_at,omitempty" yaml:"created_at,omitempty"`
+	UpdatedAt                    string          `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
+}
+
+// AccessGroup is the normalized Access group model.
+type AccessGroup struct {
+	ID        string          `json:"id" yaml:"id"`
+	Name      string          `json:"name,omitempty" yaml:"name,omitempty"`
+	Include   json.RawMessage `json:"include,omitempty" yaml:"include,omitempty"`
+	Exclude   json.RawMessage `json:"exclude,omitempty" yaml:"exclude,omitempty"`
+	Require   json.RawMessage `json:"require,omitempty" yaml:"require,omitempty"`
+	IsDefault any             `json:"is_default,omitempty" yaml:"is_default,omitempty"`
+}
+
+// IdentityProvider is the normalized Access identity provider model. Config is
+// kept raw so provider-specific settings survive round trips.
+type IdentityProvider struct {
+	ID                 string          `json:"id" yaml:"id"`
+	Name               string          `json:"name,omitempty" yaml:"name,omitempty"`
+	Type               string          `json:"type,omitempty" yaml:"type,omitempty"`
+	Config             json.RawMessage `json:"config,omitempty" yaml:"config,omitempty"`
+	SCIMConfig         json.RawMessage `json:"scim_config,omitempty" yaml:"scim_config,omitempty"`
+	ReadOnly           bool            `json:"read_only,omitempty" yaml:"read_only,omitempty"`
+	SAMLCertificateSet json.RawMessage `json:"saml_certificate_set,omitempty" yaml:"saml_certificate_set,omitempty"`
+}
+
+// AccessServiceToken is the normalized Access service token model.
+// ClientSecret is populated only by create and rotate responses.
+type AccessServiceToken struct {
+	ID           string `json:"id" yaml:"id"`
+	Name         string `json:"name,omitempty" yaml:"name,omitempty"`
+	ClientID     string `json:"client_id,omitempty" yaml:"client_id,omitempty"`
+	ClientSecret string `json:"client_secret,omitempty" yaml:"client_secret,omitempty"`
+	Duration     string `json:"duration,omitempty" yaml:"duration,omitempty"`
+	Enabled      bool   `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	ExpiresAt    string `json:"expires_at,omitempty" yaml:"expires_at,omitempty"`
+	CreatedAt    string `json:"created_at,omitempty" yaml:"created_at,omitempty"`
+	UpdatedAt    string `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
+}
+
+// ---- v0.4 slice 3: Zero Trust Gateway and devices -------------------------
+
+// GatewayRule is the normalized Zero Trust Gateway (network/HTTP) rule model.
+type GatewayRule struct {
+	ID            string          `json:"id" yaml:"id"`
+	Name          string          `json:"name,omitempty" yaml:"name,omitempty"`
+	Action        string          `json:"action,omitempty" yaml:"action,omitempty"`
+	Description   string          `json:"description,omitempty" yaml:"description,omitempty"`
+	Traffic       string          `json:"traffic,omitempty" yaml:"traffic,omitempty"`
+	Identity      string          `json:"identity,omitempty" yaml:"identity,omitempty"`
+	DevicePosture string          `json:"device_posture,omitempty" yaml:"device_posture,omitempty"`
+	Enabled       bool            `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	Precedence    int64           `json:"precedence,omitempty" yaml:"precedence,omitempty"`
+	ReadOnly      bool            `json:"read_only,omitempty" yaml:"read_only,omitempty"`
+	Sharable      bool            `json:"sharable,omitempty" yaml:"sharable,omitempty"`
+	Version       int64           `json:"version,omitempty" yaml:"version,omitempty"`
+	Filters       json.RawMessage `json:"filters,omitempty" yaml:"filters,omitempty"`
+	RuleSettings  json.RawMessage `json:"rule_settings,omitempty" yaml:"rule_settings,omitempty"`
+	Schedule      json.RawMessage `json:"schedule,omitempty" yaml:"schedule,omitempty"`
+	Expiration    json.RawMessage `json:"expiration,omitempty" yaml:"expiration,omitempty"`
+	CreatedAt     string          `json:"created_at,omitempty" yaml:"created_at,omitempty"`
+	UpdatedAt     string          `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
+}
+
+// GatewayItem is one value inside a Gateway list.
+type GatewayItem struct {
+	Value       string `json:"value,omitempty" yaml:"value,omitempty"`
+	Description string `json:"description,omitempty" yaml:"description,omitempty"`
+	CreatedAt   string `json:"created_at,omitempty" yaml:"created_at,omitempty"`
+}
+
+// GatewayList is the normalized Gateway list model.
+type GatewayList struct {
+	ID          string        `json:"id" yaml:"id"`
+	Name        string        `json:"name,omitempty" yaml:"name,omitempty"`
+	Type        string        `json:"type,omitempty" yaml:"type,omitempty"`
+	Description string        `json:"description,omitempty" yaml:"description,omitempty"`
+	Count       int64         `json:"count,omitempty" yaml:"count,omitempty"`
+	Items       []GatewayItem `json:"items,omitempty" yaml:"items,omitempty"`
+	CreatedAt   string        `json:"created_at,omitempty" yaml:"created_at,omitempty"`
+	UpdatedAt   string        `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
+}
+
+// GatewayLocation is the normalized Gateway DNS location model.
+type GatewayLocation struct {
+	ID                      string          `json:"id" yaml:"id"`
+	Name                    string          `json:"name,omitempty" yaml:"name,omitempty"`
+	ClientDefault           bool            `json:"client_default,omitempty" yaml:"client_default,omitempty"`
+	ECSSupport              bool            `json:"ecs_support,omitempty" yaml:"ecs_support,omitempty"`
+	DNSDestinationIPsID     string          `json:"dns_destination_ips_id,omitempty" yaml:"dns_destination_ips_id,omitempty"`
+	DNSDestinationIPV6Block string          `json:"dns_destination_ipv6_block_id,omitempty" yaml:"dns_destination_ipv6_block_id,omitempty"`
+	DOHSubdomain            string          `json:"doh_subdomain,omitempty" yaml:"doh_subdomain,omitempty"`
+	IP                      string          `json:"ip,omitempty" yaml:"ip,omitempty"`
+	IPV4Destination         string          `json:"ipv4_destination,omitempty" yaml:"ipv4_destination,omitempty"`
+	IPV4DestinationBackup   string          `json:"ipv4_destination_backup,omitempty" yaml:"ipv4_destination_backup,omitempty"`
+	Networks                json.RawMessage `json:"networks,omitempty" yaml:"networks,omitempty"`
+	Endpoints               json.RawMessage `json:"endpoints,omitempty" yaml:"endpoints,omitempty"`
+	MaxTTL                  json.RawMessage `json:"max_ttl,omitempty" yaml:"max_ttl,omitempty"`
+	CreatedAt               string          `json:"created_at,omitempty" yaml:"created_at,omitempty"`
+	UpdatedAt               string          `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
+}
+
+// Device is the normalized Zero Trust device registration model. The device
+// key is deliberately not modeled: it is a registration credential and is only
+// available through --raw.
+type Device struct {
+	ID           string          `json:"id" yaml:"id"`
+	Name         string          `json:"name,omitempty" yaml:"name,omitempty"`
+	DeviceType   string          `json:"device_type,omitempty" yaml:"device_type,omitempty"`
+	MacAddress   string          `json:"mac_address,omitempty" yaml:"mac_address,omitempty"`
+	IP           string          `json:"ip,omitempty" yaml:"ip,omitempty"`
+	Manufacturer string          `json:"manufacturer,omitempty" yaml:"manufacturer,omitempty"`
+	Model        string          `json:"model,omitempty" yaml:"model,omitempty"`
+	SerialNumber string          `json:"serial_number,omitempty" yaml:"serial_number,omitempty"`
+	OSVersion    string          `json:"os_version,omitempty" yaml:"os_version,omitempty"`
+	OSDistroName string          `json:"os_distro_name,omitempty" yaml:"os_distro_name,omitempty"`
+	OSDistroRev  string          `json:"os_distro_revision,omitempty" yaml:"os_distro_revision,omitempty"`
+	Version      string          `json:"version,omitempty" yaml:"version,omitempty"`
+	Deleted      bool            `json:"deleted,omitempty" yaml:"deleted,omitempty"`
+	LastSeen     string          `json:"last_seen,omitempty" yaml:"last_seen,omitempty"`
+	Created      string          `json:"created,omitempty" yaml:"created,omitempty"`
+	Updated      string          `json:"updated,omitempty" yaml:"updated,omitempty"`
+	RevokedAt    string          `json:"revoked_at,omitempty" yaml:"revoked_at,omitempty"`
+	User         json.RawMessage `json:"user,omitempty" yaml:"user,omitempty"`
+}
+
+// PhysicalDevice is the normalized device-fleet model.
+type PhysicalDevice struct {
+	ID                   string          `json:"id" yaml:"id"`
+	Name                 string          `json:"name,omitempty" yaml:"name,omitempty"`
+	DeviceType           string          `json:"device_type,omitempty" yaml:"device_type,omitempty"`
+	HardwareID           string          `json:"hardware_id,omitempty" yaml:"hardware_id,omitempty"`
+	MacAddress           string          `json:"mac_address,omitempty" yaml:"mac_address,omitempty"`
+	Manufacturer         string          `json:"manufacturer,omitempty" yaml:"manufacturer,omitempty"`
+	Model                string          `json:"model,omitempty" yaml:"model,omitempty"`
+	SerialNumber         string          `json:"serial_number,omitempty" yaml:"serial_number,omitempty"`
+	OSVersion            string          `json:"os_version,omitempty" yaml:"os_version,omitempty"`
+	OSVersionExtra       string          `json:"os_version_extra,omitempty" yaml:"os_version_extra,omitempty"`
+	ClientVersion        string          `json:"client_version,omitempty" yaml:"client_version,omitempty"`
+	PublicIP             string          `json:"public_ip,omitempty" yaml:"public_ip,omitempty"`
+	ActiveRegistrations  int64           `json:"active_registrations,omitempty" yaml:"active_registrations,omitempty"`
+	LastSeenAt           string          `json:"last_seen_at,omitempty" yaml:"last_seen_at,omitempty"`
+	LastSeenRegistration json.RawMessage `json:"last_seen_registration,omitempty" yaml:"last_seen_registration,omitempty"`
+	LastSeenUser         json.RawMessage `json:"last_seen_user,omitempty" yaml:"last_seen_user,omitempty"`
+	CreatedAt            string          `json:"created_at,omitempty" yaml:"created_at,omitempty"`
+	UpdatedAt            string          `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
+	DeletedAt            string          `json:"deleted_at,omitempty" yaml:"deleted_at,omitempty"`
+}
+
+// DevicePostureRule is the normalized device posture rule model.
+type DevicePostureRule struct {
+	ID          string          `json:"id" yaml:"id"`
+	Name        string          `json:"name,omitempty" yaml:"name,omitempty"`
+	Type        string          `json:"type,omitempty" yaml:"type,omitempty"`
+	Description string          `json:"description,omitempty" yaml:"description,omitempty"`
+	Enabled     bool            `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	Expiration  string          `json:"expiration,omitempty" yaml:"expiration,omitempty"`
+	Schedule    string          `json:"schedule,omitempty" yaml:"schedule,omitempty"`
+	Input       json.RawMessage `json:"input,omitempty" yaml:"input,omitempty"`
+	Match       json.RawMessage `json:"match,omitempty" yaml:"match,omitempty"`
+}

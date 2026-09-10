@@ -28,6 +28,7 @@ import (
 	"github.com/hnkNkm/flareadm/cmd/ssl"
 	"github.com/hnkNkm/flareadm/cmd/vectorize"
 	"github.com/hnkNkm/flareadm/cmd/waf"
+	zerotrust "github.com/hnkNkm/flareadm/cmd/zero-trust"
 	"github.com/hnkNkm/flareadm/cmd/zone"
 	"github.com/hnkNkm/flareadm/internal/app"
 	"github.com/hnkNkm/flareadm/internal/errors"
@@ -95,6 +96,7 @@ func NewCommand(rt *app.Runtime) *cobra.Command {
 	root.AddCommand(queue.New(rt))
 	root.AddCommand(hyperdrive.New(rt))
 	root.AddCommand(vectorize.New(rt))
+	root.AddCommand(zerotrust.New(rt))
 	root.AddCommand(pagerule.New(rt))
 	root.AddCommand(cache.New(rt))
 	root.AddCommand(api.New(rt))

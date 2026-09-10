@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hnkNkm/flareadm/internal/app"
 	"github.com/hnkNkm/flareadm/internal/cloudflare"
 	"github.com/hnkNkm/flareadm/internal/errors"
 	"github.com/hnkNkm/flareadm/internal/pagination"
@@ -4604,5 +4605,2074 @@ func TestPaginationRepeatedCursorTerminates(t *testing.T) {
 	}
 	if got := api.count(); got > 2 {
 		t.Fatalf("requests = %d, want the loop to stop as soon as the cursor repeats", got)
+	}
+}
+
+// ---- v0.4 slice 1: zero-trust tunnel / routes / organization --------------
+
+func tunnelJSON(id, name string) map[string]any {
+	return map[string]any{
+		"id": id, "name": name, "status": "healthy", "tun_type": "cfd_tunnel",
+		"config_src": "cloudflare", "remote_config": true,
+		"connections": []any{map[string]any{"id": "c1", "arch": "linux_amd64", "config_version": float64(3), "features": []string{"ha"}, "run_at": "2025-01-01T00:00:00Z"}},
+		"created_at":  "2025-01-01T00:00:00Z", "conns_active_at": "2025-01-02T00:00:00Z",
+	}
+}
+
+func routeJSON(id string) map[string]any {
+	return map[string]any{
+		"id": id, "network": "10.0.0.0/8", "tunnel_id": "t1", "comment": "office",
+		"virtual_network_id": "vn1", "created_at": "2025-01-01T00:00:00Z",
+	}
+}
+
+func orgJSON() map[string]any {
+	return map[string]any{
+		"name": "Acme", "auth_domain": "acme.cloudflareaccess.com", "session_duration": "24h",
+		"is_ui_read_only": false, "mfa_required_for_all_apps": true, "allow_authenticate_via_warp": true,
+		"custom_pages": map[string]any{"forbidden": "page-1"},
+	}
+}
+
+func v06API(t *testing.T) *apiStub {
+	tbase := "/accounts/" + accountID + "/cfd_tunnel"
+	rbase := "/accounts/" + accountID + "/teamnet/routes"
+	obase := "/accounts/" + accountID + "/access/organizations"
+	return newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		switch {
+		// Tunnels
+		case method == "GET" && path == tbase:
+			return 200, envelope([]any{tunnelJSON("t1", "edge")})
+		case method == "POST" && path == tbase:
+			return 200, envelope(tunnelJSON("tnew", "new-tunnel"))
+		case (method == "GET" || method == "PATCH" || method == "DELETE") && path == tbase+"/t1":
+			switch method {
+			case "DELETE":
+				return 200, envelope(tunnelJSON("t1", "edge"))
+			default:
+				return 200, envelope(tunnelJSON("t1", "edge"))
+			}
+		case method == "GET" && path == tbase+"/t1/token":
+			return 200, envelope("S3CR3T-TUNNEL-TOKEN")
+		case method == "GET" && path == tbase+"/t1/connections":
+			return 200, envelope([]any{map[string]any{"id": "c1", "arch": "linux_amd64", "config_version": float64(3), "features": []string{"ha"}, "run_at": "2025-01-01T00:00:00Z"}})
+		case method == "DELETE" && path == tbase+"/t1/connections":
+			return 200, envelope(nil)
+		case method == "GET" && path == tbase+"/t1/configurations":
+			return 200, envelope(map[string]any{"config": map[string]any{
+				"ingress":      []any{map[string]any{"hostname": "app.example.com", "service": "http://localhost:8080"}},
+				"unknownField": "keep-me",
+			}})
+		case method == "PUT" && path == tbase+"/t1/configurations":
+			var body map[string]any
+			_ = json.Unmarshal([]byte(r.Body), &body)
+			return 200, envelope(map[string]any{"config": body["config"]})
+		// Routes
+		case method == "GET" && path == rbase:
+			return 200, envelope([]any{routeJSON("r1")})
+		case method == "POST" && path == rbase:
+			return 200, envelope(routeJSON("rnew"))
+		case (method == "GET" || method == "PATCH" || method == "DELETE") && path == rbase+"/r1":
+			if method == "DELETE" {
+				return 200, envelope(routeJSON("r1"))
+			}
+			return 200, envelope(routeJSON("r1"))
+		// Organization
+		case method == "GET" && path == obase:
+			return 200, envelope(orgJSON())
+		case method == "PUT" && path == obase:
+			var body map[string]any
+			_ = json.Unmarshal([]byte(r.Body), &body)
+			return 200, envelope(body)
+		}
+		s, b := apiErr(404, 7000, "not found")
+		return s, b
+	})
+}
+
+func TestTunnelCRUD(t *testing.T) {
+	api := v06API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(args ...string) []string {
+		return append(args, "--account-id", accountID, "--endpoint-url", ep)
+	}
+
+	res := runCLI(t, base("zero-trust", "tunnel", "list", "--name", "edge", "--status", "healthy",
+		"--uuid", "11111111-1111-1111-1111-111111111111", "--deleted")...)
+	if res.code != 0 {
+		t.Fatalf("list: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Path != "/accounts/"+accountID+"/cfd_tunnel" {
+		t.Fatalf("list path = %q", req.Path)
+	}
+	for _, want := range []string{"name=edge", "status=healthy", "uuid=11111111", "is_deleted=true"} {
+		if !strings.Contains(req.Query, want) {
+			t.Fatalf("list query %q missing %q", req.Query, want)
+		}
+	}
+	if !strings.Contains(res.stdout, "edge") || !strings.Contains(res.stdout, "healthy") || !strings.Contains(res.stdout, "cfd_tunnel") {
+		t.Fatalf("list output = %s", res.stdout)
+	}
+
+	res = runCLI(t, base("zero-trust", "tunnel", "get", "t1")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "edge") {
+		t.Fatalf("get: code=%d stdout=%q", res.code, res.stdout)
+	}
+
+	// create with a @file tunnel secret
+	secretFile := filepath.Join(t.TempDir(), "secret.txt")
+	_ = os.WriteFile(secretFile, []byte("S3CR3T-TUNNEL-SECRET"), 0o600)
+	res = runCLI(t, base("zero-trust", "tunnel", "create", "--name", "new-tunnel",
+		"--config-src", "cloudflare", "--tunnel-secret", "@"+secretFile)...)
+	if res.code != 0 {
+		t.Fatalf("create: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "POST" || req.Path != "/accounts/"+accountID+"/cfd_tunnel" {
+		t.Fatalf("create request = %+v", req)
+	}
+	want := map[string]any{"name": "new-tunnel", "config_src": "cloudflare", "tunnel_secret": "S3CR3T-TUNNEL-SECRET"}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, want) {
+		t.Fatalf("create body mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+	if strings.Contains(res.stdout, "S3CR3T-TUNNEL-SECRET") || strings.Contains(res.stderr, "S3CR3T-TUNNEL-SECRET") {
+		t.Fatalf("tunnel secret leaked")
+	}
+
+	// inline secret rejected
+	res = runCLI(t, base("zero-trust", "tunnel", "create", "--name", "x", "--tunnel-secret", "S3CR3T-INLINE")...)
+	if res.code != errors.CodeInvalid || !strings.Contains(res.stderr, "@file") {
+		t.Fatalf("inline secret: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if strings.Contains(res.stderr, "S3CR3T-INLINE") {
+		t.Fatalf("inline secret value echoed: %q", res.stderr)
+	}
+
+	// dry-run + validation
+	before := api.count()
+	res = runCLI(t, base("zero-trust", "tunnel", "create", "--name", "x", "--dry-run")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "Would create tunnel x") || api.count() != before {
+		t.Fatalf("dry-run: code=%d stdout=%q", res.code, res.stdout)
+	}
+	for _, args := range [][]string{
+		base("zero-trust", "tunnel", "create"),
+		base("zero-trust", "tunnel", "create", "--name", "x", "--config-src", "sometimes"),
+		base("zero-trust", "tunnel", "update", "t1"),
+	} {
+		if res := runCLI(t, args...); res.code != errors.CodeInvalid {
+			t.Fatalf("%v: code=%d, want 2 (stderr=%q)", args, res.code, res.stderr)
+		}
+	}
+
+	// update
+	res = runCLI(t, base("zero-trust", "tunnel", "update", "t1", "--name", "renamed")...)
+	if res.code != 0 {
+		t.Fatalf("update: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "PATCH" {
+		t.Fatalf("update request = %+v", req)
+	}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, map[string]any{"name": "renamed"}) {
+		t.Fatalf("update body = %#v", got)
+	}
+
+	// delete guard rails
+	del := base("zero-trust", "tunnel", "delete", "t1")
+	if res := runCLI(t, del...); res.code != errors.CodeInvalid {
+		t.Fatalf("refusal: code=%d", res.code)
+	}
+	for _, r := range api.requests() {
+		if r.Method == "DELETE" {
+			t.Fatalf("DELETE without confirmation")
+		}
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--dry-run")...); res.code != 0 || !strings.Contains(res.stdout, "Would delete tunnel edge") {
+		t.Fatalf("dry-run: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--yes")...); res.code != 0 {
+		t.Fatalf("delete: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if req := api.last(); req.Method != "DELETE" || req.Path != "/accounts/"+accountID+"/cfd_tunnel/t1" {
+		t.Fatalf("delete request = %+v", req)
+	}
+
+	// error mapping
+	api404 := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		s, b := apiErr(404, 7000, "tunnel not found")
+		return s, b
+	})
+	if res := runCLI(t, "zero-trust", "tunnel", "get", "t1", "--account-id", accountID, "--endpoint-url", api404.srv.URL); res.code != errors.CodeNotFound {
+		t.Fatalf("404: code=%d, want 5", res.code)
+	}
+	api403 := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		s, b := apiErr(403, 9109, "forbidden")
+		return s, b
+	})
+	if res := runCLI(t, "zero-trust", "tunnel", "list", "--account-id", accountID, "--endpoint-url", api403.srv.URL); res.code != errors.CodePermission {
+		t.Fatalf("403: code=%d, want 4", res.code)
+	}
+
+	// ambiguous account scope
+	apiAmbig := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		if method == "GET" && path == "/accounts" {
+			return 200, envelope([]any{
+				map[string]any{"id": accountID, "name": "one"},
+				map[string]any{"id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "name": "two"},
+			})
+		}
+		s, b := apiErr(404, 0, "nope")
+		return s, b
+	})
+	if res := runCLI(t, "zero-trust", "tunnel", "list", "--endpoint-url", apiAmbig.srv.URL); res.code != errors.CodeInvalid {
+		t.Fatalf("ambiguous account: code=%d, want 2 (stderr=%q)", res.code, res.stderr)
+	}
+}
+
+func TestTunnelTokenHygiene(t *testing.T) {
+	api := v06API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+
+	res := runCLI(t, "zero-trust", "tunnel", "token", "t1", "--account-id", accountID, "--debug", "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("token: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if res.stdout != "S3CR3T-TUNNEL-TOKEN\n" {
+		t.Fatalf("token stdout = %q", res.stdout)
+	}
+	if !strings.Contains(res.stderr, "debug:") {
+		t.Fatalf("expected debug diagnostics active: %q", res.stderr)
+	}
+	if strings.Contains(res.stderr, "S3CR3T-TUNNEL-TOKEN") {
+		t.Fatalf("token leaked into --debug output: %q", res.stderr)
+	}
+	if api.last().Path != "/accounts/"+accountID+"/cfd_tunnel/t1/token" {
+		t.Fatalf("token path = %q", api.last().Path)
+	}
+
+	// --raw prints the raw envelope on stdout only.
+	res = runCLI(t, "zero-trust", "tunnel", "token", "t1", "--raw", "--account-id", accountID, "--endpoint-url", ep)
+	if res.code != 0 || !strings.Contains(res.stdout, "S3CR3T-TUNNEL-TOKEN") {
+		t.Fatalf("raw token: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if strings.Contains(res.stderr, "S3CR3T-TUNNEL-TOKEN") {
+		t.Fatalf("raw token leaked into stderr")
+	}
+}
+
+func TestProtectSecretRedactsErrorText(t *testing.T) {
+	// The tunnel token command registers the token with ProtectSecret; this
+	// proves that anything registered that way is scrubbed from error text
+	// (including upstream messages that echo it).
+	rt := app.NewRuntime(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	rt.ProtectSecret("S3CR3T-REGISTERED")
+	if got := rt.Redact("Error: upstream said S3CR3T-REGISTERED twice S3CR3T-REGISTERED"); strings.Contains(got, "S3CR3T-REGISTERED") {
+		t.Fatalf("registered secret not redacted: %q", got)
+	}
+}
+
+func TestTunnelConnections(t *testing.T) {
+	api := v06API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(args ...string) []string {
+		return append(args, "--account-id", accountID, "--endpoint-url", ep)
+	}
+
+	res := runCLI(t, base("zero-trust", "tunnel", "connection", "list", "t1")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "c1") || !strings.Contains(res.stdout, "linux_amd64") {
+		t.Fatalf("list: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if api.last().Path != "/accounts/"+accountID+"/cfd_tunnel/t1/connections" {
+		t.Fatalf("list path = %q", api.last().Path)
+	}
+
+	res = runCLI(t, base("zero-trust", "tunnel", "connection", "get", "t1", "c1")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "c1") {
+		t.Fatalf("get: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if res := runCLI(t, base("zero-trust", "tunnel", "connection", "get", "t1", "missing")...); res.code != errors.CodeNotFound {
+		t.Fatalf("missing connection: code=%d, want 5", res.code)
+	}
+
+	del := base("zero-trust", "tunnel", "connection", "delete", "t1", "--client-id", "c1")
+	if res := runCLI(t, del...); res.code != errors.CodeInvalid {
+		t.Fatalf("refusal: code=%d", res.code)
+	}
+	for _, r := range api.requests() {
+		if r.Method == "DELETE" {
+			t.Fatalf("DELETE without confirmation")
+		}
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--dry-run")...); res.code != 0 || !strings.Contains(res.stdout, "Would delete connection c1") {
+		t.Fatalf("dry-run: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--yes")...); res.code != 0 {
+		t.Fatalf("delete: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Method != "DELETE" || req.Path != "/accounts/"+accountID+"/cfd_tunnel/t1/connections" || !strings.Contains(req.Query, "client_id=c1") {
+		t.Fatalf("delete request = %+v", req)
+	}
+	if res := runCLI(t, base("zero-trust", "tunnel", "connection", "delete", "t1")...); res.code != errors.CodeInvalid {
+		t.Fatalf("missing client id: code=%d", res.code)
+	}
+}
+
+func TestTunnelConfiguration(t *testing.T) {
+	api := v06API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(args ...string) []string {
+		return append(args, "--account-id", accountID, "--endpoint-url", ep)
+	}
+
+	res := runCLI(t, base("zero-trust", "tunnel", "configuration", "get", "t1", "--json")...)
+	if res.code != 0 {
+		t.Fatalf("get: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if !strings.Contains(res.stdout, "app.example.com") || !strings.Contains(res.stdout, "keep-me") {
+		t.Fatalf("get output = %s", res.stdout)
+	}
+	if api.last().Path != "/accounts/"+accountID+"/cfd_tunnel/t1/configurations" {
+		t.Fatalf("get path = %q", api.last().Path)
+	}
+
+	configFile := filepath.Join(t.TempDir(), "config.json")
+	config := `{"ingress":[{"hostname":"new.example.com","service":"http://localhost:9000","unknownNested":{"keep":true}}],"unknownTop":"keep"}`
+	_ = os.WriteFile(configFile, []byte(config), 0o600)
+	res = runCLI(t, base("zero-trust", "tunnel", "configuration", "update", "t1", "--config", "@"+configFile)...)
+	if res.code != 0 {
+		t.Fatalf("update: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Method != "PUT" || req.Path != "/accounts/"+accountID+"/cfd_tunnel/t1/configurations" {
+		t.Fatalf("update request = %+v", req)
+	}
+	got := decodeRequestBody(t, req.Body)
+	cfg, ok := got["config"].(map[string]any)
+	if !ok {
+		t.Fatalf("update body = %#v", got)
+	}
+	if cfg["unknownTop"] != "keep" {
+		t.Fatalf("unknown fields not preserved: %#v", cfg)
+	}
+	ingress := cfg["ingress"].([]any)[0].(map[string]any)
+	if ingress["service"] != "http://localhost:9000" {
+		t.Fatalf("ingress = %#v", ingress)
+	}
+	if _, ok := ingress["unknownNested"]; !ok {
+		t.Fatalf("nested unknown field dropped: %#v", ingress)
+	}
+
+	before := api.count()
+	res = runCLI(t, base("zero-trust", "tunnel", "configuration", "update", "t1", "--config", "@"+configFile, "--dry-run")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "Would replace the configuration") || api.count() != before {
+		t.Fatalf("dry-run: code=%d stdout=%q", res.code, res.stdout)
+	}
+	for _, args := range [][]string{
+		base("zero-trust", "tunnel", "configuration", "update", "t1"),
+		base("zero-trust", "tunnel", "configuration", "update", "t1", "--config", "[1]"),
+	} {
+		if res := runCLI(t, args...); res.code != errors.CodeInvalid {
+			t.Fatalf("%v: code=%d, want 2 (stderr=%q)", args, res.code, res.stderr)
+		}
+	}
+}
+
+func TestTunnelRoutesCRUD(t *testing.T) {
+	api := v06API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(args ...string) []string {
+		return append(args, "--account-id", accountID, "--endpoint-url", ep)
+	}
+
+	res := runCLI(t, base("zero-trust", "route", "list", "--network-subset", "10.0.0.0/9", "--tunnel-id", "t1", "--comment", "office")...)
+	if res.code != 0 {
+		t.Fatalf("list: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Path != "/accounts/"+accountID+"/teamnet/routes" {
+		t.Fatalf("list path = %q", req.Path)
+	}
+	for _, want := range []string{"network_subset=10.0.0.0", "tunnel_id=t1", "comment=office"} {
+		if !strings.Contains(req.Query, want) {
+			t.Fatalf("list query %q missing %q", req.Query, want)
+		}
+	}
+	if !strings.Contains(res.stdout, "10.0.0.0/8") {
+		t.Fatalf("list output = %s", res.stdout)
+	}
+
+	res = runCLI(t, base("zero-trust", "route", "get", "r1")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "office") {
+		t.Fatalf("get: code=%d stdout=%q", res.code, res.stdout)
+	}
+
+	res = runCLI(t, base("zero-trust", "route", "create", "--network", "192.168.0.0/16", "--tunnel-id", "t1", "--comment", "lan")...)
+	if res.code != 0 {
+		t.Fatalf("create: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "POST" {
+		t.Fatalf("create request = %+v", req)
+	}
+	want := map[string]any{"network": "192.168.0.0/16", "tunnel_id": "t1", "comment": "lan"}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, want) {
+		t.Fatalf("create body mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+
+	res = runCLI(t, base("zero-trust", "route", "update", "r1", "--comment", "updated")...)
+	if res.code != 0 {
+		t.Fatalf("update: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "PATCH" {
+		t.Fatalf("update request = %+v", req)
+	}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, map[string]any{"comment": "updated"}) {
+		t.Fatalf("update body = %#v", got)
+	}
+
+	for _, args := range [][]string{
+		base("zero-trust", "route", "create", "--tunnel-id", "t1"),
+		base("zero-trust", "route", "create", "--network", "10.0.0.0/8"),
+		base("zero-trust", "route", "update", "r1"),
+	} {
+		if res := runCLI(t, args...); res.code != errors.CodeInvalid {
+			t.Fatalf("%v: code=%d, want 2", args, res.code)
+		}
+	}
+
+	del := base("zero-trust", "route", "delete", "r1")
+	if res := runCLI(t, del...); res.code != errors.CodeInvalid {
+		t.Fatalf("refusal: code=%d", res.code)
+	}
+	for _, r := range api.requests() {
+		if r.Method == "DELETE" {
+			t.Fatalf("DELETE without confirmation")
+		}
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--dry-run")...); res.code != 0 || !strings.Contains(res.stdout, "Would delete route 10.0.0.0/8") {
+		t.Fatalf("dry-run: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--yes")...); res.code != 0 {
+		t.Fatalf("delete: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if req := api.last(); req.Method != "DELETE" || req.Path != "/accounts/"+accountID+"/teamnet/routes/r1" {
+		t.Fatalf("delete request = %+v", req)
+	}
+
+	api404 := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		s, b := apiErr(404, 7000, "route not found")
+		return s, b
+	})
+	if res := runCLI(t, "zero-trust", "route", "get", "r1", "--account-id", accountID, "--endpoint-url", api404.srv.URL); res.code != errors.CodeNotFound {
+		t.Fatalf("404: code=%d, want 5", res.code)
+	}
+}
+
+func TestZeroTrustOrganization(t *testing.T) {
+	api := v06API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(args ...string) []string {
+		return append(args, "--account-id", accountID, "--endpoint-url", ep)
+	}
+
+	res := runCLI(t, base("zero-trust", "organization", "get", "--json")...)
+	if res.code != 0 {
+		t.Fatalf("get: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if !strings.Contains(res.stdout, "Acme") || !strings.Contains(res.stdout, "acme.cloudflareaccess.com") {
+		t.Fatalf("get output = %s", res.stdout)
+	}
+	if api.last().Path != "/accounts/"+accountID+"/access/organizations" {
+		t.Fatalf("get path = %q", api.last().Path)
+	}
+
+	res = runCLI(t, base("zero-trust", "organization", "update", "--name", "Acme2", "--session-duration", "48h", "--mfa-required-for-all-apps=false")...)
+	if res.code != 0 {
+		t.Fatalf("update: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Method != "PUT" || req.Path != "/accounts/"+accountID+"/access/organizations" {
+		t.Fatalf("update request = %+v", req)
+	}
+	got := decodeRequestBody(t, req.Body)
+	if got["name"] != "Acme2" || got["session_duration"] != "48h" || got["mfa_required_for_all_apps"] != false {
+		t.Fatalf("update body = %#v", got)
+	}
+	if _, ok := got["custom_pages"]; !ok {
+		t.Fatalf("unmapped fields must be preserved: %#v", got)
+	}
+	if got["auth_domain"] != "acme.cloudflareaccess.com" {
+		t.Fatalf("existing fields must be preserved: %#v", got)
+	}
+
+	// --settings merges arbitrary fields
+	res = runCLI(t, base("zero-trust", "organization", "update", "--settings", `{"deny_unmatched_requests":true}`)...)
+	if res.code != 0 {
+		t.Fatalf("settings update: code=%d stderr=%q", res.code, res.stderr)
+	}
+	got = decodeRequestBody(t, api.last().Body)
+	if got["deny_unmatched_requests"] != true {
+		t.Fatalf("settings merge failed: %#v", got)
+	}
+
+	if res := runCLI(t, base("zero-trust", "organization", "update")...); res.code != errors.CodeInvalid {
+		t.Fatalf("empty update: code=%d", res.code)
+	}
+	if res := runCLI(t, base("zero-trust", "organization", "update", "--settings", "[1]")...); res.code != errors.CodeInvalid {
+		t.Fatalf("bad settings: code=%d", res.code)
+	}
+
+	api403 := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		s, b := apiErr(403, 9109, "forbidden")
+		return s, b
+	})
+	if res := runCLI(t, "zero-trust", "organization", "get", "--account-id", accountID, "--endpoint-url", api403.srv.URL); res.code != errors.CodePermission {
+		t.Fatalf("403: code=%d, want 4", res.code)
+	}
+}
+
+// ---- v0.4 slice 2: zero-trust Access --------------------------------------
+
+func accessAppJSON() map[string]any {
+	return map[string]any{
+		"id": "app1", "name": "wiki", "domain": "wiki.example.com", "type": "self_hosted",
+		"session_duration": "24h", "aud": "AUD123", "allowed_idps": []any{"idp1"},
+		"created_at": "2025-01-01T00:00:00Z", "updated_at": "2025-01-02T00:00:00Z",
+		"eager_redirect_cookie_setting": true,
+	}
+}
+
+func accessPolicyJSON(id string, appCount int) map[string]any {
+	m := map[string]any{
+		"id": id, "name": "allow staff", "decision": "allow", "precedence": float64(1),
+		"session_duration": "24h", "include": []any{map[string]any{"email_domain": map[string]any{"domain": "example.com"}}},
+		"created_at": "2025-01-01T00:00:00Z", "updated_at": "2025-01-02T00:00:00Z",
+		"mfa_config": map[string]any{"enabled": true},
+	}
+	if appCount > 0 {
+		m["app_count"] = float64(appCount)
+		m["reusable"] = true
+	}
+	return m
+}
+
+func accessGroupJSON() map[string]any {
+	return map[string]any{
+		"id": "grp1", "name": "contractors",
+		"include":    []any{map[string]any{"email_domain": map[string]any{"domain": "example.com"}}},
+		"is_default": false,
+	}
+}
+
+func identityProviderJSON() map[string]any {
+	return map[string]any{
+		"id": "idp1", "name": "okta", "type": "okta", "read_only": false,
+		"config": map[string]any{"client_id": "cid", "client_secret": "S3CR3T-IDP-CONFIG-SECRET"},
+	}
+}
+
+func serviceTokenJSON(secret string) map[string]any {
+	m := map[string]any{
+		"id": "tok1", "name": "ci", "client_id": "CID123", "duration": "8760h",
+		"enabled": true, "expires_at": "2026-01-01T00:00:00Z",
+		"created_at": "2025-01-01T00:00:00Z", "updated_at": "2025-01-02T00:00:00Z",
+	}
+	if secret != "" {
+		m["client_secret"] = secret
+	}
+	return m
+}
+
+func v07API(t *testing.T) *apiStub {
+	base := "/accounts/" + accountID + "/access"
+	appPolicies := base + "/apps/app1/policies"
+	return newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		echoPUT := func() (int, string) {
+			var body map[string]any
+			_ = json.Unmarshal([]byte(r.Body), &body)
+			return 200, envelope(body)
+		}
+		switch {
+		case method == "GET" && path == base+"/apps":
+			return 200, envelope([]any{accessAppJSON()})
+		case method == "POST" && path == base+"/apps":
+			return 200, envelope(accessAppJSON())
+		case path == base+"/apps/app1" && method == "GET":
+			return 200, envelope(accessAppJSON())
+		case path == base+"/apps/app1" && method == "PUT":
+			return echoPUT()
+		case path == base+"/apps/app1" && method == "DELETE":
+			return 200, envelope(accessAppJSON())
+		case method == "GET" && path == appPolicies:
+			return 200, envelope([]any{accessPolicyJSON("pol1", 0)})
+		case method == "POST" && path == appPolicies:
+			return 200, envelope(accessPolicyJSON("polnew", 0))
+		case path == appPolicies+"/pol1" && method == "GET":
+			return 200, envelope(accessPolicyJSON("pol1", 0))
+		case path == appPolicies+"/pol1" && method == "PUT":
+			return echoPUT()
+		case path == appPolicies+"/pol1" && method == "DELETE":
+			return 200, envelope(accessPolicyJSON("pol1", 0))
+		case method == "GET" && path == base+"/policies":
+			return 200, envelope([]any{accessPolicyJSON("rpol1", 3)})
+		case method == "POST" && path == base+"/policies":
+			return 200, envelope(accessPolicyJSON("rpolnew", 0))
+		case path == base+"/policies/rpol1" && method == "GET":
+			return 200, envelope(accessPolicyJSON("rpol1", 3))
+		case path == base+"/policies/rpol1" && method == "PUT":
+			return echoPUT()
+		case path == base+"/policies/rpol1" && method == "DELETE":
+			return 200, envelope(accessPolicyJSON("rpol1", 3))
+		case method == "GET" && path == base+"/groups":
+			return 200, envelope([]any{accessGroupJSON()})
+		case method == "POST" && path == base+"/groups":
+			return 200, envelope(accessGroupJSON())
+		case path == base+"/groups/grp1" && method == "GET":
+			return 200, envelope(accessGroupJSON())
+		case path == base+"/groups/grp1" && method == "PUT":
+			return echoPUT()
+		case path == base+"/groups/grp1" && method == "DELETE":
+			return 200, envelope(accessGroupJSON())
+		case method == "GET" && path == base+"/identity_providers":
+			return 200, envelope([]any{identityProviderJSON()})
+		case method == "POST" && path == base+"/identity_providers":
+			return 200, envelope(identityProviderJSON())
+		case path == base+"/identity_providers/idp1" && method == "GET":
+			return 200, envelope(identityProviderJSON())
+		case path == base+"/identity_providers/idp1" && method == "PUT":
+			return echoPUT()
+		case path == base+"/identity_providers/idp1" && method == "DELETE":
+			return 200, envelope(identityProviderJSON())
+		case method == "GET" && path == base+"/service_tokens":
+			return 200, envelope([]any{serviceTokenJSON("S3CR3T-LEAKED-BY-LIST")})
+		case method == "POST" && path == base+"/service_tokens":
+			return 200, envelope(serviceTokenJSON("S3CR3T-CLIENT-SECRET"))
+		case path == base+"/service_tokens/tok1" && method == "GET":
+			return 200, envelope(serviceTokenJSON("S3CR3T-LEAKED-BY-GET"))
+		case path == base+"/service_tokens/tok1" && method == "PUT":
+			return echoPUT()
+		case path == base+"/service_tokens/tok1" && method == "DELETE":
+			return 200, envelope(serviceTokenJSON(""))
+		case path == base+"/service_tokens/tok1/rotate" && method == "POST":
+			return 200, envelope(serviceTokenJSON("S3CR3T-ROTATED-SECRET"))
+		}
+		s, b := apiErr(404, 7000, "not found")
+		return s, b
+	})
+}
+
+func TestAccessApplications(t *testing.T) {
+	api := v07API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(args ...string) []string {
+		return append(args, "--account-id", accountID, "--endpoint-url", ep)
+	}
+	prefix := "/accounts/" + accountID + "/access/apps"
+
+	res := runCLI(t, base("zero-trust", "access", "app", "list", "--name", "wiki", "--search", "wiki", "--domain", "wiki.example.com", "--exact")...)
+	if res.code != 0 {
+		t.Fatalf("list: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Path != prefix {
+		t.Fatalf("list path = %q", req.Path)
+	}
+	for _, want := range []string{"name=wiki", "search=wiki", "domain=wiki.example.com", "exact=true"} {
+		if !strings.Contains(req.Query, want) {
+			t.Fatalf("list query %q missing %q", req.Query, want)
+		}
+	}
+	if !strings.Contains(res.stdout, "wiki.example.com") || !strings.Contains(res.stdout, "self_hosted") {
+		t.Fatalf("list output = %s", res.stdout)
+	}
+
+	res = runCLI(t, base("zero-trust", "access", "app", "get", "app1")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "AUD123") {
+		t.Fatalf("get: code=%d stdout=%q", res.code, res.stdout)
+	}
+
+	res = runCLI(t, base("zero-trust", "access", "app", "create", "--name", "wiki", "--type", "self_hosted",
+		"--domain", "wiki.example.com", "--session-duration", "24h", "--allowed-idps", "idp1, idp2",
+		"--skip-interstitial", "--settings", `{"scim_config":{"idp_uid":"idp1"}}`)...)
+	if res.code != 0 {
+		t.Fatalf("create: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "POST" || req.Path != prefix {
+		t.Fatalf("create request = %+v", req)
+	}
+	want := map[string]any{
+		"name": "wiki", "type": "self_hosted", "domain": "wiki.example.com",
+		"session_duration": "24h", "allowed_idps": []any{"idp1", "idp2"}, "skip_interstitial": true,
+		"scim_config": map[string]any{"idp_uid": "idp1"},
+	}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, want) {
+		t.Fatalf("create body mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"create", "--type", "self_hosted", "--domain", "x.example.com"}, "--name is required"},
+		{[]string{"create", "--name", "x", "--domain", "x.example.com"}, "--type is required"},
+		{[]string{"create", "--name", "x", "--type", "nonsense", "--domain", "x.example.com"}, "invalid --type"},
+		{[]string{"create", "--name", "x", "--type", "self_hosted"}, "--domain is required"},
+	} {
+		res := runCLI(t, base(append([]string{"zero-trust", "access", "app"}, tc.args...)...)...)
+		if res.code != errors.CodeInvalid || !strings.Contains(res.stderr, tc.want) {
+			t.Fatalf("%v: code=%d stderr=%q (want contains %q)", tc.args, res.code, res.stderr, tc.want)
+		}
+	}
+	// domain may come from --settings
+	res = runCLI(t, base("zero-trust", "access", "app", "create", "--name", "x", "--type", "self_hosted",
+		"--settings", `{"domain":"x.example.com"}`, "--dry-run")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "Would create access application x") {
+		t.Fatalf("settings domain: code=%d stdout=%q", res.code, res.stdout)
+	}
+
+	res = runCLI(t, base("zero-trust", "access", "app", "update", "app1", "--session-duration", "48h")...)
+	if res.code != 0 {
+		t.Fatalf("update: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "PUT" || req.Path != prefix+"/app1" {
+		t.Fatalf("update request = %+v", req)
+	}
+	got := decodeRequestBody(t, req.Body)
+	if got["session_duration"] != "48h" {
+		t.Fatalf("update did not apply override: %#v", got)
+	}
+	if got["eager_redirect_cookie_setting"] != true || got["name"] != "wiki" {
+		t.Fatalf("update dropped unmodeled or existing fields: %#v", got)
+	}
+	if res := runCLI(t, base("zero-trust", "access", "app", "update", "app1")...); res.code != errors.CodeInvalid {
+		t.Fatalf("empty update: code=%d", res.code)
+	}
+	if res := runCLI(t, base("zero-trust", "access", "app", "update", "app1", "--session-duration", "48h", "--dry-run")...); res.code != 0 || !strings.Contains(res.stdout, "Would update access application app1") {
+		t.Fatalf("dry-run update: code=%d stdout=%q", res.code, res.stdout)
+	}
+
+	del := base("zero-trust", "access", "app", "delete", "app1")
+	if res := runCLI(t, del...); res.code != errors.CodeInvalid {
+		t.Fatalf("refusal: code=%d", res.code)
+	}
+	for _, r := range api.requests() {
+		if r.Method == "DELETE" {
+			t.Fatalf("DELETE without confirmation")
+		}
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--dry-run")...); res.code != 0 || !strings.Contains(res.stdout, "Would delete access application wiki") {
+		t.Fatalf("dry-run: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--yes")...); res.code != 0 {
+		t.Fatalf("delete: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if req := api.last(); req.Method != "DELETE" || req.Path != prefix+"/app1" {
+		t.Fatalf("delete request = %+v", req)
+	}
+
+	api404 := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		s, b := apiErr(404, 7000, "app not found")
+		return s, b
+	})
+	if res := runCLI(t, "zero-trust", "access", "app", "get", "app1", "--account-id", accountID, "--endpoint-url", api404.srv.URL); res.code != errors.CodeNotFound {
+		t.Fatalf("404: code=%d, want 5", res.code)
+	}
+	api403 := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		s, b := apiErr(403, 9109, "forbidden")
+		return s, b
+	})
+	if res := runCLI(t, "zero-trust", "access", "app", "list", "--account-id", accountID, "--endpoint-url", api403.srv.URL); res.code != errors.CodePermission {
+		t.Fatalf("403: code=%d, want 4", res.code)
+	}
+	apiAmbig := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		if method == "GET" && path == "/accounts" {
+			return 200, envelope([]any{
+				map[string]any{"id": accountID, "name": "one"},
+				map[string]any{"id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "name": "two"},
+			})
+		}
+		s, b := apiErr(404, 0, "nope")
+		return s, b
+	})
+	if res := runCLI(t, "zero-trust", "access", "app", "list", "--endpoint-url", apiAmbig.srv.URL); res.code != errors.CodeInvalid {
+		t.Fatalf("ambiguous account: code=%d, want 2 (stderr=%q)", res.code, res.stderr)
+	}
+}
+
+func TestAccessAppPolicies(t *testing.T) {
+	api := v07API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(args ...string) []string {
+		return append(args, "--account-id", accountID, "--endpoint-url", ep)
+	}
+	prefix := "/accounts/" + accountID + "/access/apps/app1/policies"
+	rulesFile := filepath.Join(t.TempDir(), "rules.json")
+	_ = os.WriteFile(rulesFile, []byte(`[{"email_domain":{"domain":"example.com"}}]`), 0o600)
+
+	res := runCLI(t, base("zero-trust", "access", "app", "policy", "list", "app1")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "pol1") {
+		t.Fatalf("list: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if api.last().Path != prefix {
+		t.Fatalf("list path = %q", api.last().Path)
+	}
+
+	res = runCLI(t, base("zero-trust", "access", "app", "policy", "get", "app1", "pol1")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "allow") {
+		t.Fatalf("get: code=%d stdout=%q", res.code, res.stdout)
+	}
+
+	res = runCLI(t, base("zero-trust", "access", "app", "policy", "create", "app1",
+		"--name", "allow staff", "--decision", "allow", "--include", "@"+rulesFile,
+		"--session-duration", "24h", "--precedence", "1")...)
+	if res.code != 0 {
+		t.Fatalf("create: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Method != "POST" || req.Path != prefix {
+		t.Fatalf("create request = %+v", req)
+	}
+	want := map[string]any{
+		"name": "allow staff", "decision": "allow",
+		"include":          []any{map[string]any{"email_domain": map[string]any{"domain": "example.com"}}},
+		"session_duration": "24h", "precedence": float64(1),
+	}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, want) {
+		t.Fatalf("create body mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"app", "policy", "create", "app1", "--name", "x", "--decision", "allow"}, "--include is required"},
+		{[]string{"app", "policy", "create", "app1", "--name", "x", "--include", "@" + rulesFile}, "--decision is required"},
+		{[]string{"app", "policy", "create", "app1", "--decision", "allow", "--include", "@" + rulesFile}, "--name is required"},
+		{[]string{"app", "policy", "create", "app1", "--name", "x", "--decision", "maybe", "--include", "@" + rulesFile}, "invalid --decision"},
+		{[]string{"app", "policy", "create", "app1", "--name", "x", "--decision", "allow", "--include", "not-json"}, "must be a JSON array"},
+	} {
+		res := runCLI(t, base(append([]string{"zero-trust", "access"}, tc.args...)...)...)
+		if res.code != errors.CodeInvalid || !strings.Contains(res.stderr, tc.want) {
+			t.Fatalf("%v: code=%d stderr=%q (want %q)", tc.args, res.code, res.stderr, tc.want)
+		}
+	}
+
+	res = runCLI(t, base("zero-trust", "access", "app", "policy", "update", "app1", "pol1", "--session-duration", "48h")...)
+	if res.code != 0 {
+		t.Fatalf("update: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "PUT" || req.Path != prefix+"/pol1" {
+		t.Fatalf("update request = %+v", req)
+	}
+	got := decodeRequestBody(t, req.Body)
+	if got["session_duration"] != "48h" || got["mfa_config"] == nil {
+		t.Fatalf("update body = %#v", got)
+	}
+
+	del := base("zero-trust", "access", "app", "policy", "delete", "app1", "pol1")
+	if res := runCLI(t, del...); res.code != errors.CodeInvalid {
+		t.Fatalf("refusal: code=%d", res.code)
+	}
+	for _, r := range api.requests() {
+		if r.Method == "DELETE" {
+			t.Fatalf("DELETE without confirmation")
+		}
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--yes")...); res.code != 0 {
+		t.Fatalf("delete: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if req := api.last(); req.Method != "DELETE" || req.Path != prefix+"/pol1" {
+		t.Fatalf("delete request = %+v", req)
+	}
+}
+
+func TestAccessPolicies(t *testing.T) {
+	api := v07API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(args ...string) []string {
+		return append(args, "--account-id", accountID, "--endpoint-url", ep)
+	}
+	prefix := "/accounts/" + accountID + "/access/policies"
+	rulesFile := filepath.Join(t.TempDir(), "rules.json")
+	_ = os.WriteFile(rulesFile, []byte(`[{"group":{"id":"grp1"}}]`), 0o600)
+
+	res := runCLI(t, base("zero-trust", "access", "policy", "list")...)
+	if res.code != 0 {
+		t.Fatalf("list: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if api.last().Path != prefix {
+		t.Fatalf("list path = %q", api.last().Path)
+	}
+	if !strings.Contains(res.stdout, "rpol1") || !strings.Contains(res.stdout, "3") {
+		t.Fatalf("list output = %s", res.stdout)
+	}
+
+	res = runCLI(t, base("zero-trust", "access", "policy", "get", "rpol1")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "rpol1") {
+		t.Fatalf("get: code=%d stdout=%q", res.code, res.stdout)
+	}
+
+	res = runCLI(t, base("zero-trust", "access", "policy", "create", "--name", "allow staff",
+		"--decision", "allow", "--include", "@"+rulesFile, "--purpose-justification-required")...)
+	if res.code != 0 {
+		t.Fatalf("create: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Method != "POST" || req.Path != prefix {
+		t.Fatalf("create request = %+v", req)
+	}
+	want := map[string]any{
+		"name": "allow staff", "decision": "allow",
+		"include":                        []any{map[string]any{"group": map[string]any{"id": "grp1"}}},
+		"purpose_justification_required": true,
+	}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, want) {
+		t.Fatalf("create body mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+
+	res = runCLI(t, base("zero-trust", "access", "policy", "update", "rpol1", "--decision", "deny")...)
+	if res.code != 0 {
+		t.Fatalf("update: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "PUT" || req.Path != prefix+"/rpol1" {
+		t.Fatalf("update request = %+v", req)
+	}
+	if got := decodeRequestBody(t, req.Body); got["decision"] != "deny" {
+		t.Fatalf("update body = %#v", got)
+	}
+	if res := runCLI(t, base("zero-trust", "access", "policy", "update", "rpol1")...); res.code != errors.CodeInvalid {
+		t.Fatalf("empty update: code=%d", res.code)
+	}
+
+	del := base("zero-trust", "access", "policy", "delete", "rpol1")
+	if res := runCLI(t, del...); res.code != errors.CodeInvalid {
+		t.Fatalf("refusal: code=%d", res.code)
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--dry-run")...); res.code != 0 || !strings.Contains(res.stdout, "Would delete access policy allow staff") {
+		t.Fatalf("dry-run: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--yes")...); res.code != 0 {
+		t.Fatalf("delete: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if req := api.last(); req.Method != "DELETE" || req.Path != prefix+"/rpol1" {
+		t.Fatalf("delete request = %+v", req)
+	}
+}
+
+func TestAccessGroups(t *testing.T) {
+	api := v07API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(args ...string) []string {
+		return append(args, "--account-id", accountID, "--endpoint-url", ep)
+	}
+	prefix := "/accounts/" + accountID + "/access/groups"
+	rulesFile := filepath.Join(t.TempDir(), "rules.json")
+	_ = os.WriteFile(rulesFile, []byte(`[{"email":{"email":"a@example.com"}}]`), 0o600)
+
+	res := runCLI(t, base("zero-trust", "access", "group", "list", "--name", "contractors", "--search", "contract")...)
+	if res.code != 0 {
+		t.Fatalf("list: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Path != prefix || !strings.Contains(req.Query, "name=contractors") || !strings.Contains(req.Query, "search=contract") {
+		t.Fatalf("list request = %+v", req)
+	}
+	if !strings.Contains(res.stdout, "grp1") {
+		t.Fatalf("list output = %s", res.stdout)
+	}
+
+	if res := runCLI(t, base("zero-trust", "access", "group", "get", "grp1")...); res.code != 0 || !strings.Contains(res.stdout, "contractors") {
+		t.Fatalf("get: code=%d stdout=%q", res.code, res.stdout)
+	}
+
+	res = runCLI(t, base("zero-trust", "access", "group", "create", "--name", "contractors",
+		"--include", "@"+rulesFile, "--is-default=false")...)
+	if res.code != 0 {
+		t.Fatalf("create: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "POST" || req.Path != prefix {
+		t.Fatalf("create request = %+v", req)
+	}
+	want := map[string]any{
+		"name": "contractors", "is_default": false,
+		"include": []any{map[string]any{"email": map[string]any{"email": "a@example.com"}}},
+	}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, want) {
+		t.Fatalf("create body mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+
+	if res := runCLI(t, base("zero-trust", "access", "group", "create", "--name", "x")...); res.code != errors.CodeInvalid {
+		t.Fatalf("missing include: code=%d", res.code)
+	}
+	if res := runCLI(t, base("zero-trust", "access", "group", "update", "grp1")...); res.code != errors.CodeInvalid {
+		t.Fatalf("empty update: code=%d", res.code)
+	}
+
+	res = runCLI(t, base("zero-trust", "access", "group", "update", "grp1", "--name", "staff")...)
+	if res.code != 0 {
+		t.Fatalf("update: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if req := api.last(); req.Method != "PUT" || req.Path != prefix+"/grp1" {
+		t.Fatalf("update request = %+v", req)
+	}
+
+	del := base("zero-trust", "access", "group", "delete", "grp1")
+	if res := runCLI(t, del...); res.code != errors.CodeInvalid {
+		t.Fatalf("refusal: code=%d", res.code)
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--yes")...); res.code != 0 {
+		t.Fatalf("delete: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if req := api.last(); req.Method != "DELETE" || req.Path != prefix+"/grp1" {
+		t.Fatalf("delete request = %+v", req)
+	}
+}
+
+func TestAccessIdentityProviders(t *testing.T) {
+	api := v07API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(args ...string) []string {
+		return append(args, "--account-id", accountID, "--endpoint-url", ep)
+	}
+	prefix := "/accounts/" + accountID + "/access/identity_providers"
+	configFile := filepath.Join(t.TempDir(), "okta.json")
+	_ = os.WriteFile(configFile, []byte(`{"client_id":"cid","client_secret":"S3CR3T-IDP-CONFIG-SECRET","okta_account":"acme.okta.com"}`), 0o600)
+
+	res := runCLI(t, base("zero-trust", "access", "identity-provider", "list", "--scim-enabled", "true")...)
+	if res.code != 0 {
+		t.Fatalf("list: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Path != prefix || !strings.Contains(req.Query, "scim_enabled=true") {
+		t.Fatalf("list request = %+v", req)
+	}
+	if !strings.Contains(res.stdout, "okta") {
+		t.Fatalf("list output = %s", res.stdout)
+	}
+
+	res = runCLI(t, base("zero-trust", "access", "identity-provider", "get", "idp1")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "okta") {
+		t.Fatalf("get: code=%d stdout=%q", res.code, res.stdout)
+	}
+
+	res = runCLI(t, base("zero-trust", "access", "identity-provider", "create", "--name", "okta",
+		"--type", "okta", "--config", "@"+configFile)...)
+	if res.code != 0 {
+		t.Fatalf("create: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "POST" || req.Path != prefix {
+		t.Fatalf("create request = %+v", req)
+	}
+	want := map[string]any{
+		"name": "okta", "type": "okta",
+		"config": map[string]any{"client_id": "cid", "client_secret": "S3CR3T-IDP-CONFIG-SECRET", "okta_account": "acme.okta.com"},
+	}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, want) {
+		t.Fatalf("create body mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+	if strings.Contains(res.stderr, "S3CR3T-IDP-CONFIG-SECRET") {
+		t.Fatalf("config secret leaked to stderr")
+	}
+
+	// --config is @file-only because it carries credentials
+	res = runCLI(t, base("zero-trust", "access", "identity-provider", "create", "--name", "x",
+		"--type", "okta", "--config", `{"client_secret":"S3CR3T-INLINE"}`)...)
+	if res.code != errors.CodeInvalid || !strings.Contains(res.stderr, "@file") {
+		t.Fatalf("inline config: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if strings.Contains(res.stderr, "S3CR3T-INLINE") {
+		t.Fatalf("inline config value echoed: %q", res.stderr)
+	}
+	for _, args := range [][]string{
+		{"create", "--type", "okta", "--config", "@" + configFile},
+		{"create", "--name", "x", "--config", "@" + configFile},
+	} {
+		if res := runCLI(t, base(append([]string{"zero-trust", "access", "identity-provider"}, args...)...)...); res.code != errors.CodeInvalid {
+			t.Fatalf("%v: code=%d, want 2", args, res.code)
+		}
+	}
+
+	res = runCLI(t, base("zero-trust", "access", "identity-provider", "update", "idp1", "--name", "okta2")...)
+	if res.code != 0 {
+		t.Fatalf("update: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "PUT" || req.Path != prefix+"/idp1" {
+		t.Fatalf("update request = %+v", req)
+	}
+	got := decodeRequestBody(t, req.Body)
+	cfg, ok := got["config"].(map[string]any)
+	if !ok || cfg["client_secret"] != "S3CR3T-IDP-CONFIG-SECRET" {
+		t.Fatalf("update did not preserve the existing config: %#v", got)
+	}
+	if got["name"] != "okta2" {
+		t.Fatalf("update did not apply the override: %#v", got)
+	}
+	if strings.Contains(res.stdout, "S3CR3T-IDP-CONFIG-SECRET") || strings.Contains(res.stderr, "S3CR3T-IDP-CONFIG-SECRET") {
+		t.Fatalf("update leaked the preserved config secret")
+	}
+	if res := runCLI(t, base("zero-trust", "access", "identity-provider", "update", "idp1")...); res.code != errors.CodeInvalid {
+		t.Fatalf("empty update: code=%d", res.code)
+	}
+
+	del := base("zero-trust", "access", "identity-provider", "delete", "idp1")
+	if res := runCLI(t, del...); res.code != errors.CodeInvalid {
+		t.Fatalf("refusal: code=%d", res.code)
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--yes")...); res.code != 0 {
+		t.Fatalf("delete: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if req := api.last(); req.Method != "DELETE" || req.Path != prefix+"/idp1" {
+		t.Fatalf("delete request = %+v", req)
+	}
+
+	// A config secret must never surface in API error text: --config values are
+	// registered as protected secrets before any request is made.
+	apiEcho := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		s, b := apiErr(400, 6003, "invalid client_secret S3CR3T-IDP-CONFIG-SECRET")
+		return s, b
+	})
+	res = runCLI(t, "zero-trust", "access", "identity-provider", "create", "--name", "okta",
+		"--type", "okta", "--config", "@"+configFile, "--account-id", accountID, "--endpoint-url", apiEcho.srv.URL)
+	if res.code == 0 {
+		t.Fatalf("echo stub should fail the command")
+	}
+	if strings.Contains(res.stderr, "S3CR3T-IDP-CONFIG-SECRET") {
+		t.Fatalf("config secret leaked into API error text: %q", res.stderr)
+	}
+}
+
+func TestAccessServiceTokens(t *testing.T) {
+	api := v07API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(args ...string) []string {
+		return append(args, "--account-id", accountID, "--endpoint-url", ep)
+	}
+	prefix := "/accounts/" + accountID + "/access/service_tokens"
+
+	res := runCLI(t, base("zero-trust", "access", "service-token", "list", "--name", "ci", "--search", "ci")...)
+	if res.code != 0 {
+		t.Fatalf("list: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Path != prefix || !strings.Contains(req.Query, "name=ci") || !strings.Contains(req.Query, "search=ci") {
+		t.Fatalf("list request = %+v", req)
+	}
+	if !strings.Contains(res.stdout, "CID123") {
+		t.Fatalf("list output = %s", res.stdout)
+	}
+	if strings.Contains(res.stdout, "S3CR3T-LEAKED-BY-LIST") {
+		t.Fatalf("list printed a client secret returned by the API: %s", res.stdout)
+	}
+
+	res = runCLI(t, base("zero-trust", "access", "service-token", "get", "tok1", "--json")...)
+	if res.code != 0 {
+		t.Fatalf("get: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if api.last().Path != prefix+"/tok1" {
+		t.Fatalf("get path = %q", api.last().Path)
+	}
+	if strings.Contains(res.stdout, "S3CR3T-LEAKED-BY-GET") {
+		t.Fatalf("get printed a client secret returned by the API: %s", res.stdout)
+	}
+
+	// create is the explicit request for the value: stdout only.
+	res = runCLI(t, base("zero-trust", "access", "service-token", "create", "--name", "ci",
+		"--duration", "8760h", "--debug")...)
+	if res.code != 0 {
+		t.Fatalf("create: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "POST" || req.Path != prefix {
+		t.Fatalf("create request = %+v", req)
+	}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, map[string]any{"name": "ci", "duration": "8760h"}) {
+		t.Fatalf("create body = %#v", got)
+	}
+	if !strings.Contains(res.stdout, "S3CR3T-CLIENT-SECRET") {
+		t.Fatalf("create did not print the client secret: %s", res.stdout)
+	}
+	if !strings.Contains(res.stderr, "debug:") {
+		t.Fatalf("expected debug diagnostics active: %q", res.stderr)
+	}
+	if strings.Contains(res.stderr, "S3CR3T-CLIENT-SECRET") {
+		t.Fatalf("client secret leaked into --debug output: %q", res.stderr)
+	}
+
+	res = runCLI(t, base("zero-trust", "access", "service-token", "rotate", "tok1",
+		"--previous-secret-expires-at", "2026-01-01T00:00:00Z")...)
+	if res.code != 0 {
+		t.Fatalf("rotate: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "POST" || req.Path != prefix+"/tok1/rotate" {
+		t.Fatalf("rotate request = %+v", req)
+	}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, map[string]any{"previous_client_secret_expires_at": "2026-01-01T00:00:00Z"}) {
+		t.Fatalf("rotate body = %#v", got)
+	}
+	if !strings.Contains(res.stdout, "S3CR3T-ROTATED-SECRET") {
+		t.Fatalf("rotate did not print the new client secret: %s", res.stdout)
+	}
+	if strings.Contains(res.stderr, "S3CR3T-ROTATED-SECRET") {
+		t.Fatalf("rotated secret leaked into stderr: %q", res.stderr)
+	}
+	if res := runCLI(t, base("zero-trust", "access", "service-token", "rotate", "tok1", "--dry-run")...); res.code != 0 || !strings.Contains(res.stdout, "Would rotate service token tok1") {
+		t.Fatalf("rotate dry-run: code=%d stdout=%q", res.code, res.stdout)
+	}
+
+	res = runCLI(t, base("zero-trust", "access", "service-token", "update", "tok1", "--duration", "4380h")...)
+	if res.code != 0 {
+		t.Fatalf("update: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "PUT" || req.Path != prefix+"/tok1" {
+		t.Fatalf("update request = %+v", req)
+	}
+	if got := decodeRequestBody(t, req.Body); got["duration"] != "4380h" || got["name"] != "ci" {
+		t.Fatalf("update body = %#v", got)
+	}
+	if strings.Contains(res.stdout, "S3CR3T-LEAKED-BY-GET") || strings.Contains(res.stderr, "S3CR3T-LEAKED-BY-GET") {
+		t.Fatalf("update leaked the client secret carried through the read-modify-PUT")
+	}
+
+	for _, args := range [][]string{
+		{"create"},
+		{"update", "tok1"},
+	} {
+		res := runCLI(t, base(append([]string{"zero-trust", "access", "service-token"}, args...)...)...)
+		if res.code != errors.CodeInvalid {
+			t.Fatalf("%v: code=%d, want 2 (stderr=%q)", args, res.code, res.stderr)
+		}
+	}
+
+	del := base("zero-trust", "access", "service-token", "delete", "tok1")
+	if res := runCLI(t, del...); res.code != errors.CodeInvalid {
+		t.Fatalf("refusal: code=%d", res.code)
+	}
+	for _, r := range api.requests() {
+		if r.Method == "DELETE" {
+			t.Fatalf("DELETE without confirmation")
+		}
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--dry-run")...); res.code != 0 || !strings.Contains(res.stdout, "Would delete service token ci") {
+		t.Fatalf("dry-run: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--yes")...); res.code != 0 {
+		t.Fatalf("delete: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if req := api.last(); req.Method != "DELETE" || req.Path != prefix+"/tok1" {
+		t.Fatalf("delete request = %+v", req)
+	}
+}
+
+func TestAccessSecretRedactedFromErrorText(t *testing.T) {
+	// Both create and rotate register the client secret with ProtectSecret the
+	// moment it is received; this proves that any later error text containing a
+	// registered secret is scrubbed before it reaches stderr (the same
+	// rt.Redact call the CLI error printer makes).
+	rt := app.NewRuntime(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	rt.ProtectSecret("S3CR3T-CLIENT-SECRET")
+	if got := rt.Redact("Error: upstream rejected S3CR3T-CLIENT-SECRET"); strings.Contains(got, "S3CR3T-CLIENT-SECRET") {
+		t.Fatalf("registered client secret not redacted: %q", got)
+	}
+}
+
+// ---- v0.4 slice 3: zero-trust Gateway and devices -------------------------
+
+func gatewayRuleJSON(id, name string) map[string]any {
+	return map[string]any{
+		"id": id, "name": name, "action": "block", "enabled": true, "precedence": float64(1),
+		"traffic":       "any(dns.security_category[*] in {\"malware\"})",
+		"filters":       []any{map[string]any{"expression": "dns.fqdn in $list"}},
+		"rule_settings": map[string]any{"block_page_enabled": true},
+		"schedule":      map[string]any{"mon": "00:00-24:00"},
+		"expiration":    map[string]any{"expires_at": "2026-01-01T00:00:00Z", "duration": float64(60)},
+		"created_at":    "2025-01-01T00:00:00Z", "updated_at": "2025-01-02T00:00:00Z",
+		"warning_status": "none", "read_only": false, "sharable": true, "version": float64(3),
+	}
+}
+
+func gatewayListJSON() map[string]any {
+	return map[string]any{
+		"id": "list1", "name": "blocked", "type": "DOMAIN", "count": float64(2),
+		"description": "blocked domains",
+		"items": []any{
+			map[string]any{"value": "a.example.com", "description": "ads", "created_at": "2025-01-01T00:00:00Z"},
+			map[string]any{"value": "b.example.com"},
+		},
+		"created_at": "2025-01-01T00:00:00Z", "updated_at": "2025-01-02T00:00:00Z",
+	}
+}
+
+func gatewayLocationJSON() map[string]any {
+	return map[string]any{
+		"id": "loc1", "name": "office", "client_default": true, "ecs_support": false,
+		"networks":               []any{map[string]any{"network": "192.0.2.0/24"}},
+		"endpoints":              map[string]any{"doh": map[string]any{"enabled": true}},
+		"max_ttl":                map[string]any{"dns_ttl": float64(30)},
+		"dns_destination_ips_id": "dd1", "doh_subdomain": "office",
+		"created_at": "2025-01-01T00:00:00Z", "updated_at": "2025-01-02T00:00:00Z",
+		"unmapped_location_field": "keep-me",
+	}
+}
+
+func deviceJSON() map[string]any {
+	return map[string]any{
+		"id": "dev1", "name": "laptop", "device_type": "windows", "mac_address": "aa:bb:cc",
+		"ip": "1.2.3.4", "last_seen": "2025-01-01T00:00:00Z",
+		"created": "2024-01-01T00:00:00Z", "updated": "2025-01-02T00:00:00Z", "deleted": false,
+		"key":  "S3CR3T-DEVICE-KEY",
+		"user": map[string]any{"id": "u1", "email": "a@example.com", "name": "A"},
+	}
+}
+
+func physicalDeviceJSON(id, name string) map[string]any {
+	return map[string]any{
+		"id": id, "name": name, "device_type": "windows", "os_version": "10.0.19045",
+		"client_version": "2025.1.0", "last_seen_at": "2025-01-01T00:00:00Z",
+		"last_seen_user":       map[string]any{"email": "a@example.com"},
+		"active_registrations": float64(1), "hardware_id": "hw1",
+	}
+}
+
+func devicePostureJSON() map[string]any {
+	return map[string]any{
+		"id": "post1", "name": "disk encrypted", "type": "disk_encryption", "enabled": true,
+		"expiration": "24h", "schedule": "",
+		"input":                  map[string]any{"requireAll": true},
+		"match":                  []any{map[string]any{"platform": "windows"}},
+		"unmapped_posture_field": "keep-me",
+	}
+}
+
+func deviceSettingsJSON() map[string]any {
+	return map[string]any{
+		"gateway_proxy_enabled": true, "disable_for_time": float64(0),
+		"use_zt_virtual_ip": false, "unmapped_setting": "keep-me",
+	}
+}
+
+func v08API(t *testing.T) *apiStub {
+	base := "/accounts/" + accountID
+	gw := base + "/gateway"
+	dev := base + "/devices"
+	pd := dev + "/physical-devices"
+	return newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		echoPUT := func() (int, string) {
+			var body map[string]any
+			_ = json.Unmarshal([]byte(r.Body), &body)
+			return 200, envelope(body)
+		}
+		switch {
+		// Gateway rules
+		case method == "GET" && path == gw+"/rules":
+			return 200, envelope([]any{gatewayRuleJSON("rule1", "block malware"), gatewayRuleJSON("rule2", "allow ops")})
+		case method == "POST" && path == gw+"/rules":
+			return 200, envelope(gatewayRuleJSON("rulenew", "new rule"))
+		case path == gw+"/rules/rule1" && method == "GET":
+			return 200, envelope(gatewayRuleJSON("rule1", "block malware"))
+		case path == gw+"/rules/rule1" && method == "PUT":
+			return echoPUT()
+		case path == gw+"/rules/rule1" && method == "DELETE":
+			return 200, envelope(gatewayRuleJSON("rule1", "block malware"))
+		// Gateway lists
+		case method == "GET" && path == gw+"/lists":
+			return 200, envelope([]any{gatewayListJSON()})
+		case method == "POST" && path == gw+"/lists":
+			return 200, envelope(gatewayListJSON())
+		case path == gw+"/lists/list1" && method == "GET":
+			return 200, envelope(gatewayListJSON())
+		case path == gw+"/lists/list1" && method == "PUT":
+			return echoPUT()
+		case path == gw+"/lists/list1" && method == "PATCH":
+			return echoPUT()
+		case path == gw+"/lists/list1" && method == "DELETE":
+			return 200, envelope(gatewayListJSON())
+		case method == "GET" && path == gw+"/lists/list1/items":
+			return 200, envelope([]any{
+				map[string]any{"value": "a.example.com", "description": "ads", "created_at": "2025-01-01T00:00:00Z"},
+				map[string]any{"value": "b.example.com"},
+			})
+		// Gateway locations
+		case method == "GET" && path == gw+"/locations":
+			return 200, envelope([]any{gatewayLocationJSON()})
+		case method == "POST" && path == gw+"/locations":
+			return 200, envelope(gatewayLocationJSON())
+		case path == gw+"/locations/loc1" && method == "GET":
+			return 200, envelope(gatewayLocationJSON())
+		case path == gw+"/locations/loc1" && method == "PUT":
+			return echoPUT()
+		case path == gw+"/locations/loc1" && method == "DELETE":
+			return 200, envelope(gatewayLocationJSON())
+		// Devices (legacy registrations)
+		case method == "GET" && path == dev:
+			return 200, envelope([]any{deviceJSON()})
+		case path == dev+"/dev1" && method == "GET":
+			return 200, envelope(deviceJSON())
+		// Device fleet
+		case method == "GET" && path == pd:
+			if strings.Contains(r.Query, "cursor=page2") {
+				return 200, envelopeWithInfo([]any{physicalDeviceJSON("pd2", "desktop")}, map[string]any{"count": float64(1)})
+			}
+			return 200, envelopeWithInfo([]any{physicalDeviceJSON("pd1", "laptop")}, map[string]any{
+				"count":   float64(1),
+				"cursors": map[string]any{"after": "page2"},
+			})
+		case path == pd+"/pd1" && method == "GET":
+			return 200, envelope(physicalDeviceJSON("pd1", "laptop"))
+		case path == pd+"/pd1" && method == "DELETE":
+			return 200, envelope(physicalDeviceJSON("pd1", "laptop"))
+		case path == pd+"/pd1/revoke" && method == "POST":
+			return 200, envelope(map[string]any{})
+		// Posture
+		case method == "GET" && path == dev+"/posture":
+			return 200, envelope([]any{devicePostureJSON()})
+		case method == "POST" && path == dev+"/posture":
+			return 200, envelope(devicePostureJSON())
+		case path == dev+"/posture/post1" && method == "GET":
+			return 200, envelope(devicePostureJSON())
+		case path == dev+"/posture/post1" && method == "PUT":
+			return echoPUT()
+		case path == dev+"/posture/post1" && method == "DELETE":
+			return 200, envelope(devicePostureJSON())
+		// Settings
+		case method == "GET" && path == dev+"/settings":
+			return 200, envelope(deviceSettingsJSON())
+		case method == "PUT" && path == dev+"/settings":
+			var body map[string]any
+			_ = json.Unmarshal([]byte(r.Body), &body)
+			inner, _ := body["device_settings"].(map[string]any)
+			return 200, envelope(inner)
+		}
+		s, b := apiErr(404, 7000, "not found")
+		return s, b
+	})
+}
+
+func TestGatewayRules(t *testing.T) {
+	api := v08API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(args ...string) []string {
+		return append(args, "--account-id", accountID, "--endpoint-url", ep)
+	}
+	prefix := "/accounts/" + accountID + "/gateway/rules"
+
+	res := runCLI(t, base("zero-trust", "gateway", "rule", "list")...)
+	if res.code != 0 {
+		t.Fatalf("list: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Path != prefix || req.Query != "" {
+		t.Fatalf("list request = %+v", req)
+	}
+	if !strings.Contains(res.stdout, "block malware") || !strings.Contains(res.stdout, "block") {
+		t.Fatalf("list output = %s", res.stdout)
+	}
+	res = runCLI(t, base("zero-trust", "gateway", "rule", "list", "--max-items", "1", "--json")...)
+	if res.code != 0 {
+		t.Fatalf("list --max-items: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if strings.Contains(res.stdout, "allow ops") {
+		t.Fatalf("--max-items did not truncate: %s", res.stdout)
+	}
+
+	res = runCLI(t, base("zero-trust", "gateway", "rule", "get", "rule1")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "block malware") {
+		t.Fatalf("get: code=%d stdout=%q", res.code, res.stdout)
+	}
+
+	res = runCLI(t, base("zero-trust", "gateway", "rule", "create", "--name", "new rule", "--action", "block",
+		"--traffic", "any(dns.fqdn in $list)", "--enabled", "--precedence", "2",
+		"--filters", `[{"expression":"dns.fqdn in $list"}]`,
+		"--rule-settings", `{"block_page_enabled":true}`,
+		"--schedule", `{"mon":"00:00-24:00"}`,
+		"--expires-at", "2026-01-01T00:00:00Z", "--expiration-duration", "120")...)
+	if res.code != 0 {
+		t.Fatalf("create: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "POST" || req.Path != prefix {
+		t.Fatalf("create request = %+v", req)
+	}
+	want := map[string]any{
+		"name": "new rule", "action": "block", "traffic": "any(dns.fqdn in $list)",
+		"enabled": true, "precedence": float64(2),
+		"filters":       []any{map[string]any{"expression": "dns.fqdn in $list"}},
+		"rule_settings": map[string]any{"block_page_enabled": true},
+		"schedule":      map[string]any{"mon": "00:00-24:00"},
+		"expiration":    map[string]any{"expires_at": "2026-01-01T00:00:00Z", "duration": float64(120)},
+	}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, want) {
+		t.Fatalf("create body mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"create", "--action", "block"}, "--name is required"},
+		{[]string{"create", "--name", "x"}, "--action is required"},
+		{[]string{"create", "--name", "x", "--action", "explode"}, "invalid --action"},
+		{[]string{"create", "--name", "x", "--action", "block", "--expiration-duration", "10"}, "--expires-at is required"},
+		{[]string{"update", "rule1"}, "nothing to update"},
+	} {
+		res := runCLI(t, base(append([]string{"zero-trust", "gateway", "rule"}, tc.args...)...)...)
+		if res.code != errors.CodeInvalid || !strings.Contains(res.stderr, tc.want) {
+			t.Fatalf("%v: code=%d stderr=%q (want %q)", tc.args, res.code, res.stderr, tc.want)
+		}
+	}
+
+	res = runCLI(t, base("zero-trust", "gateway", "rule", "update", "rule1", "--name", "renamed")...)
+	if res.code != 0 {
+		t.Fatalf("update: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "PUT" || req.Path != prefix+"/rule1" {
+		t.Fatalf("update request = %+v", req)
+	}
+	got := decodeRequestBody(t, req.Body)
+	if got["name"] != "renamed" || got["warning_status"] != "none" || got["action"] != "block" {
+		t.Fatalf("update did not merge onto the current rule: %#v", got)
+	}
+	if res := runCLI(t, base("zero-trust", "gateway", "rule", "update", "rule1", "--name", "x", "--dry-run")...); res.code != 0 || !strings.Contains(res.stdout, "Would update Gateway rule rule1") {
+		t.Fatalf("dry-run update: code=%d stdout=%q", res.code, res.stdout)
+	}
+
+	del := base("zero-trust", "gateway", "rule", "delete", "rule1")
+	if res := runCLI(t, del...); res.code != errors.CodeInvalid {
+		t.Fatalf("refusal: code=%d", res.code)
+	}
+	for _, r := range api.requests() {
+		if r.Method == "DELETE" {
+			t.Fatalf("DELETE without confirmation")
+		}
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--dry-run")...); res.code != 0 || !strings.Contains(res.stdout, "Would delete Gateway rule block malware") {
+		t.Fatalf("dry-run: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--yes")...); res.code != 0 {
+		t.Fatalf("delete: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if req := api.last(); req.Method != "DELETE" || req.Path != prefix+"/rule1" {
+		t.Fatalf("delete request = %+v", req)
+	}
+
+	api404 := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		s, b := apiErr(404, 7000, "rule not found")
+		return s, b
+	})
+	if res := runCLI(t, "zero-trust", "gateway", "rule", "get", "rule1", "--account-id", accountID, "--endpoint-url", api404.srv.URL); res.code != errors.CodeNotFound {
+		t.Fatalf("404: code=%d, want 5", res.code)
+	}
+	api403 := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		s, b := apiErr(403, 9109, "forbidden")
+		return s, b
+	})
+	if res := runCLI(t, "zero-trust", "gateway", "rule", "list", "--account-id", accountID, "--endpoint-url", api403.srv.URL); res.code != errors.CodePermission {
+		t.Fatalf("403: code=%d, want 4", res.code)
+	}
+	apiAmbig := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		if method == "GET" && path == "/accounts" {
+			return 200, envelope([]any{
+				map[string]any{"id": accountID, "name": "one"},
+				map[string]any{"id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "name": "two"},
+			})
+		}
+		s, b := apiErr(404, 0, "nope")
+		return s, b
+	})
+	if res := runCLI(t, "zero-trust", "gateway", "rule", "list", "--endpoint-url", apiAmbig.srv.URL); res.code != errors.CodeInvalid {
+		t.Fatalf("ambiguous account: code=%d, want 2 (stderr=%q)", res.code, res.stderr)
+	}
+}
+
+func TestGatewayListsAndItems(t *testing.T) {
+	api := v08API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(args ...string) []string {
+		return append(args, "--account-id", accountID, "--endpoint-url", ep)
+	}
+	prefix := "/accounts/" + accountID + "/gateway/lists"
+
+	res := runCLI(t, base("zero-trust", "gateway", "list", "list", "--type", "DOMAIN")...)
+	if res.code != 0 {
+		t.Fatalf("list: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Path != prefix || !strings.Contains(req.Query, "type=DOMAIN") {
+		t.Fatalf("list request = %+v", req)
+	}
+	if !strings.Contains(res.stdout, "blocked") || !strings.Contains(res.stdout, "DOMAIN") {
+		t.Fatalf("list output = %s", res.stdout)
+	}
+	if res := runCLI(t, base("zero-trust", "gateway", "list", "list", "--type", "bogus")...); res.code != errors.CodeInvalid {
+		t.Fatalf("invalid type: code=%d", res.code)
+	}
+
+	res = runCLI(t, base("zero-trust", "gateway", "list", "get", "list1")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "list1") {
+		t.Fatalf("get: code=%d stdout=%q", res.code, res.stdout)
+	}
+
+	res = runCLI(t, base("zero-trust", "gateway", "list", "create", "--name", "blocked", "--type", "DOMAIN",
+		"--description", "blocked domains", "--items", `["a.example.com",{"value":"b.example.com","description":"ads"}]`)...)
+	if res.code != 0 {
+		t.Fatalf("create: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "POST" || req.Path != prefix {
+		t.Fatalf("create request = %+v", req)
+	}
+	want := map[string]any{
+		"name": "blocked", "type": "DOMAIN", "description": "blocked domains",
+		"items": []any{
+			map[string]any{"value": "a.example.com"},
+			map[string]any{"value": "b.example.com", "description": "ads"},
+		},
+	}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, want) {
+		t.Fatalf("create body mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"create", "--type", "DOMAIN"}, "--name is required"},
+		{[]string{"create", "--name", "x"}, "--type is required"},
+		{[]string{"create", "--name", "x", "--type", "nope"}, "invalid --type"},
+		{[]string{"create", "--name", "x", "--type", "DOMAIN", "--items", "not-json"}, "must be a JSON array"},
+		{[]string{"create", "--name", "x", "--type", "DOMAIN", "--items", `[""]`}, "non-empty strings"},
+		{[]string{"update", "list1"}, "nothing to update"},
+	} {
+		res := runCLI(t, base(append([]string{"zero-trust", "gateway", "list"}, tc.args...)...)...)
+		if res.code != errors.CodeInvalid || !strings.Contains(res.stderr, tc.want) {
+			t.Fatalf("%v: code=%d stderr=%q (want %q)", tc.args, res.code, res.stderr, tc.want)
+		}
+	}
+
+	res = runCLI(t, base("zero-trust", "gateway", "list", "update", "list1", "--description", "updated")...)
+	if res.code != 0 {
+		t.Fatalf("update: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "PUT" || req.Path != prefix+"/list1" {
+		t.Fatalf("update request = %+v", req)
+	}
+	if got := decodeRequestBody(t, req.Body); got["description"] != "updated" || got["name"] != "blocked" {
+		t.Fatalf("update body = %#v", got)
+	}
+
+	// items
+	res = runCLI(t, base("zero-trust", "gateway", "list", "item", "list", "list1")...)
+	if res.code != 0 {
+		t.Fatalf("item list: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if api.last().Path != prefix+"/list1/items" {
+		t.Fatalf("item list path = %q", api.last().Path)
+	}
+	if !strings.Contains(res.stdout, "a.example.com") || !strings.Contains(res.stdout, "ads") {
+		t.Fatalf("item list output = %s", res.stdout)
+	}
+
+	res = runCLI(t, base("zero-trust", "gateway", "list", "item", "create", "list1", "--items", `["c.example.com"]`)...)
+	if res.code != 0 {
+		t.Fatalf("item create: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "PATCH" || req.Path != prefix+"/list1" {
+		t.Fatalf("item create request = %+v", req)
+	}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, map[string]any{"append": []any{map[string]any{"value": "c.example.com"}}}) {
+		t.Fatalf("item create body = %#v", got)
+	}
+	if res := runCLI(t, base("zero-trust", "gateway", "list", "item", "create", "list1")...); res.code != errors.CodeInvalid {
+		t.Fatalf("item create without --items: code=%d", res.code)
+	}
+
+	itemDel := base("zero-trust", "gateway", "list", "item", "delete", "list1", "--values", "a.example.com,b.example.com")
+	if res := runCLI(t, itemDel...); res.code != errors.CodeInvalid {
+		t.Fatalf("item delete refusal: code=%d", res.code)
+	}
+	for _, r := range api.requests() {
+		if r.Method == "PATCH" {
+			var body map[string]any
+			_ = json.Unmarshal([]byte(r.Body), &body)
+			if _, ok := body["remove"]; ok {
+				t.Fatalf("remove PATCH issued without confirmation")
+			}
+		}
+	}
+	if res := runCLI(t, append(append([]string{}, itemDel...), "--dry-run")...); res.code != 0 || !strings.Contains(res.stdout, "Would remove 2 item(s) from Gateway list list1") {
+		t.Fatalf("item delete dry-run: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if res := runCLI(t, append(append([]string{}, itemDel...), "--yes")...); res.code != 0 {
+		t.Fatalf("item delete: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "PATCH" || req.Path != prefix+"/list1" {
+		t.Fatalf("item delete request = %+v", req)
+	}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, map[string]any{"remove": []any{"a.example.com", "b.example.com"}}) {
+		t.Fatalf("item delete body = %#v", got)
+	}
+
+	del := base("zero-trust", "gateway", "list", "delete", "list1")
+	if res := runCLI(t, del...); res.code != errors.CodeInvalid {
+		t.Fatalf("list delete refusal: code=%d", res.code)
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--yes")...); res.code != 0 {
+		t.Fatalf("list delete: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if req := api.last(); req.Method != "DELETE" || req.Path != prefix+"/list1" {
+		t.Fatalf("list delete request = %+v", req)
+	}
+}
+
+func TestGatewayLocations(t *testing.T) {
+	api := v08API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(args ...string) []string {
+		return append(args, "--account-id", accountID, "--endpoint-url", ep)
+	}
+	prefix := "/accounts/" + accountID + "/gateway/locations"
+
+	res := runCLI(t, base("zero-trust", "gateway", "location", "list")...)
+	if res.code != 0 {
+		t.Fatalf("list: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if api.last().Path != prefix || !strings.Contains(res.stdout, "office") {
+		t.Fatalf("list request = %+v stdout=%s", api.last(), res.stdout)
+	}
+
+	res = runCLI(t, base("zero-trust", "gateway", "location", "get", "loc1")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "192.0.2.0/24") {
+		t.Fatalf("get: code=%d stdout=%q", res.code, res.stdout)
+	}
+
+	res = runCLI(t, base("zero-trust", "gateway", "location", "create", "--name", "office",
+		"--networks", "192.0.2.0/24,198.51.100.0/24", "--client-default",
+		"--endpoints", `{"doh":{"enabled":true}}`, "--max-ttl", `{"dns_ttl":30}`)...)
+	if res.code != 0 {
+		t.Fatalf("create: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Method != "POST" || req.Path != prefix {
+		t.Fatalf("create request = %+v", req)
+	}
+	want := map[string]any{
+		"name": "office", "client_default": true,
+		"networks":  []any{map[string]any{"network": "192.0.2.0/24"}, map[string]any{"network": "198.51.100.0/24"}},
+		"endpoints": map[string]any{"doh": map[string]any{"enabled": true}},
+		"max_ttl":   map[string]any{"dns_ttl": float64(30)},
+	}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, want) {
+		t.Fatalf("create body mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+	if res := runCLI(t, base("zero-trust", "gateway", "location", "create", "--networks", "10.0.0.0/8")...); res.code != errors.CodeInvalid {
+		t.Fatalf("create without --name: code=%d", res.code)
+	}
+
+	res = runCLI(t, base("zero-trust", "gateway", "location", "update", "loc1", "--ecs-support")...)
+	if res.code != 0 {
+		t.Fatalf("update: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "PUT" || req.Path != prefix+"/loc1" {
+		t.Fatalf("update request = %+v", req)
+	}
+	got := decodeRequestBody(t, req.Body)
+	if got["ecs_support"] != true || got["unmapped_location_field"] != "keep-me" || got["name"] != "office" {
+		t.Fatalf("update did not merge onto the current location: %#v", got)
+	}
+	if res := runCLI(t, base("zero-trust", "gateway", "location", "update", "loc1")...); res.code != errors.CodeInvalid {
+		t.Fatalf("empty update: code=%d", res.code)
+	}
+
+	del := base("zero-trust", "gateway", "location", "delete", "loc1")
+	if res := runCLI(t, del...); res.code != errors.CodeInvalid {
+		t.Fatalf("refusal: code=%d", res.code)
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--dry-run")...); res.code != 0 || !strings.Contains(res.stdout, "Would delete Gateway location office") {
+		t.Fatalf("dry-run: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--yes")...); res.code != 0 {
+		t.Fatalf("delete: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if req := api.last(); req.Method != "DELETE" || req.Path != prefix+"/loc1" {
+		t.Fatalf("delete request = %+v", req)
+	}
+}
+
+func TestDevices(t *testing.T) {
+	api := v08API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(args ...string) []string {
+		return append(args, "--account-id", accountID, "--endpoint-url", ep)
+	}
+	dev := "/accounts/" + accountID + "/devices"
+	pd := dev + "/physical-devices"
+
+	res := runCLI(t, base("zero-trust", "device", "list", "--json")...)
+	if res.code != 0 {
+		t.Fatalf("list: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if api.last().Path != dev {
+		t.Fatalf("list path = %q", api.last().Path)
+	}
+	if !strings.Contains(res.stdout, "a@example.com") {
+		t.Fatalf("list output = %s", res.stdout)
+	}
+	if strings.Contains(res.stdout, "S3CR3T-DEVICE-KEY") {
+		t.Fatalf("device key leaked into normalized output: %s", res.stdout)
+	}
+
+	res = runCLI(t, base("zero-trust", "device", "get", "dev1")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "laptop") {
+		t.Fatalf("get: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if strings.Contains(res.stdout, "S3CR3T-DEVICE-KEY") || strings.Contains(res.stderr, "S3CR3T-DEVICE-KEY") {
+		t.Fatalf("device key leaked")
+	}
+
+	// the fleet list follows the cursor until exhaustion
+	res = runCLI(t, base("zero-trust", "device", "physical-device", "list", "--search", "laptop",
+		"--sort-by", "last_seen_at", "--sort-order", "desc", "--active-registrations", "include")...)
+	if res.code != 0 {
+		t.Fatalf("fleet list: code=%d stderr=%q", res.code, res.stderr)
+	}
+	var reqs []recordedRequest
+	for _, r := range api.requests() {
+		if r.Path == pd {
+			reqs = append(reqs, r)
+		}
+	}
+	if len(reqs) != 2 {
+		t.Fatalf("expected 2 cursor pages, got %d requests", len(reqs))
+	}
+	if reqs[0].Path != pd || !strings.Contains(reqs[0].Query, "search=laptop") ||
+		!strings.Contains(reqs[0].Query, "sort_by=last_seen_at") || !strings.Contains(reqs[0].Query, "sort_order=desc") ||
+		!strings.Contains(reqs[0].Query, "active_registrations=include") || !strings.Contains(reqs[0].Query, "per_page=") {
+		t.Fatalf("fleet list query = %q", reqs[0].Query)
+	}
+	if !strings.Contains(reqs[1].Query, "cursor=page2") {
+		t.Fatalf("second page missing cursor: %q", reqs[1].Query)
+	}
+	if !strings.Contains(res.stdout, "laptop") || !strings.Contains(res.stdout, "desktop") {
+		t.Fatalf("fleet list output = %s", res.stdout)
+	}
+
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"physical-device", "list", "--active-registrations", "sometimes"}, "invalid --active-registrations"},
+		{[]string{"physical-device", "list", "--sort-by", "color"}, "invalid --sort-by"},
+		{[]string{"physical-device", "list", "--sort-order", "sideways"}, "invalid --sort-order"},
+	} {
+		res := runCLI(t, base(append([]string{"zero-trust", "device"}, tc.args...)...)...)
+		if res.code != errors.CodeInvalid || !strings.Contains(res.stderr, tc.want) {
+			t.Fatalf("%v: code=%d stderr=%q", tc.args, res.code, res.stderr)
+		}
+	}
+
+	res = runCLI(t, base("zero-trust", "device", "physical-device", "get", "pd1")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "laptop") {
+		t.Fatalf("fleet get: code=%d stdout=%q", res.code, res.stdout)
+	}
+
+	rev := base("zero-trust", "device", "physical-device", "revoke", "pd1")
+	if res := runCLI(t, rev...); res.code != errors.CodeInvalid {
+		t.Fatalf("revoke refusal: code=%d", res.code)
+	}
+	for _, r := range api.requests() {
+		if r.Method == "POST" && strings.HasSuffix(r.Path, "/revoke") {
+			t.Fatalf("revoke without confirmation")
+		}
+	}
+	if res := runCLI(t, append(append([]string{}, rev...), "--dry-run")...); res.code != 0 || !strings.Contains(res.stdout, "Would revoke device laptop") {
+		t.Fatalf("revoke dry-run: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if res := runCLI(t, append(append([]string{}, rev...), "--yes")...); res.code != 0 {
+		t.Fatalf("revoke: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if req := api.last(); req.Method != "POST" || req.Path != pd+"/pd1/revoke" {
+		t.Fatalf("revoke request = %+v", req)
+	}
+
+	del := base("zero-trust", "device", "physical-device", "delete", "pd1")
+	if res := runCLI(t, del...); res.code != errors.CodeInvalid {
+		t.Fatalf("delete refusal: code=%d", res.code)
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--yes")...); res.code != 0 {
+		t.Fatalf("delete: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if req := api.last(); req.Method != "DELETE" || req.Path != pd+"/pd1" {
+		t.Fatalf("delete request = %+v", req)
+	}
+}
+
+func TestDevicePostureAndSettings(t *testing.T) {
+	api := v08API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(args ...string) []string {
+		return append(args, "--account-id", accountID, "--endpoint-url", ep)
+	}
+	dev := "/accounts/" + accountID + "/devices"
+
+	res := runCLI(t, base("zero-trust", "device", "posture", "list")...)
+	if res.code != 0 {
+		t.Fatalf("posture list: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if api.last().Path != dev+"/posture" || !strings.Contains(res.stdout, "disk encrypted") {
+		t.Fatalf("posture list request = %+v stdout=%s", api.last(), res.stdout)
+	}
+
+	res = runCLI(t, base("zero-trust", "device", "posture", "get", "post1")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "disk_encryption") {
+		t.Fatalf("posture get: code=%d stdout=%q", res.code, res.stdout)
+	}
+
+	res = runCLI(t, base("zero-trust", "device", "posture", "create", "--name", "disk encrypted",
+		"--type", "disk_encryption", "--input", `{"requireAll":true}`, "--match", `[{"platform":"windows"}]`,
+		"--expiration", "24h")...)
+	if res.code != 0 {
+		t.Fatalf("posture create: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Method != "POST" || req.Path != dev+"/posture" {
+		t.Fatalf("posture create request = %+v", req)
+	}
+	want := map[string]any{
+		"name": "disk encrypted", "type": "disk_encryption", "expiration": "24h",
+		"input": map[string]any{"requireAll": true},
+		"match": []any{map[string]any{"platform": "windows"}},
+	}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, want) {
+		t.Fatalf("posture create body mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"create", "--type", "disk_encryption"}, "--name is required"},
+		{[]string{"create", "--name", "x"}, "--type is required"},
+		{[]string{"create", "--name", "x", "--type", "vibes"}, "invalid --type"},
+		{[]string{"update", "post1"}, "nothing to update"},
+	} {
+		res := runCLI(t, base(append([]string{"zero-trust", "device", "posture"}, tc.args...)...)...)
+		if res.code != errors.CodeInvalid || !strings.Contains(res.stderr, tc.want) {
+			t.Fatalf("%v: code=%d stderr=%q (want %q)", tc.args, res.code, res.stderr, tc.want)
+		}
+	}
+
+	res = runCLI(t, base("zero-trust", "device", "posture", "update", "post1", "--expiration", "48h")...)
+	if res.code != 0 {
+		t.Fatalf("posture update: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "PUT" || req.Path != dev+"/posture/post1" {
+		t.Fatalf("posture update request = %+v", req)
+	}
+	got := decodeRequestBody(t, req.Body)
+	if got["expiration"] != "48h" || got["unmapped_posture_field"] != "keep-me" {
+		t.Fatalf("posture update did not merge: %#v", got)
+	}
+
+	pdel := base("zero-trust", "device", "posture", "delete", "post1")
+	if res := runCLI(t, pdel...); res.code != errors.CodeInvalid {
+		t.Fatalf("posture delete refusal: code=%d", res.code)
+	}
+	if res := runCLI(t, append(append([]string{}, pdel...), "--yes")...); res.code != 0 {
+		t.Fatalf("posture delete: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if req := api.last(); req.Method != "DELETE" || req.Path != dev+"/posture/post1" {
+		t.Fatalf("posture delete request = %+v", req)
+	}
+
+	// settings
+	res = runCLI(t, base("zero-trust", "device", "settings", "get", "--json")...)
+	if res.code != 0 {
+		t.Fatalf("settings get: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if api.last().Path != dev+"/settings" {
+		t.Fatalf("settings get path = %q", api.last().Path)
+	}
+	if !strings.Contains(res.stdout, "unmapped_setting") {
+		t.Fatalf("settings get dropped unmapped fields: %s", res.stdout)
+	}
+	res = runCLI(t, base("zero-trust", "device", "settings", "get")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "gateway_proxy_enabled") || !strings.Contains(res.stdout, "unmapped_setting") {
+		t.Fatalf("settings table: code=%d stdout=%q", res.code, res.stdout)
+	}
+
+	res = runCLI(t, base("zero-trust", "device", "settings", "update",
+		"--gateway-udp-proxy-enabled", "--settings", `{"external_emergency_signal_enabled":true}`)...)
+	if res.code != 0 {
+		t.Fatalf("settings update: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "PUT" || req.Path != dev+"/settings" {
+		t.Fatalf("settings update request = %+v", req)
+	}
+	got = decodeRequestBody(t, req.Body)
+	inner, ok := got["device_settings"].(map[string]any)
+	if !ok {
+		t.Fatalf("settings update body = %#v", got)
+	}
+	if inner["gateway_udp_proxy_enabled"] != true || inner["external_emergency_signal_enabled"] != true ||
+		inner["gateway_proxy_enabled"] != true || inner["unmapped_setting"] != "keep-me" {
+		t.Fatalf("settings update did not merge: %#v", inner)
+	}
+
+	if res := runCLI(t, base("zero-trust", "device", "settings", "update")...); res.code != errors.CodeInvalid {
+		t.Fatalf("empty settings update: code=%d", res.code)
+	}
+	if res := runCLI(t, base("zero-trust", "device", "settings", "update", "--gateway-proxy-enabled", "--dry-run")...); res.code != 0 || !strings.Contains(res.stdout, "Would update account device settings") {
+		t.Fatalf("settings dry-run: code=%d stdout=%q", res.code, res.stdout)
 	}
 }
