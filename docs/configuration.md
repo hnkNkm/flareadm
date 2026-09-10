@@ -78,7 +78,11 @@ FlareADM SHALL:
 - avoid token command-line flags because process arguments can be observable;
 - create sensitive files with restrictive permissions where supported;
 - never include credentials in crash/error reports;
-- refuse to write credentials into shell history through generated commands.
+- refuse to write credentials into shell history through generated commands;
+- accept `certificate create --private-key` only as `@path`; inline private keys are rejected
+  with exit 2 because process arguments are observable;
+- redact the resolved API token and any registered secret (private keys) from all error output
+  and diagnostics, not only under `--debug`.
 
 ## Account resolution
 

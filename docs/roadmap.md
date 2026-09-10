@@ -88,15 +88,24 @@ v0.1 known limitations:
 
 ### v0.2 — Zone and security administration
 
-```text
-ssl/tls
-certificates
-rulesets
-waf
-cache rules
-redirect rules
-page rules where still applicable
-```
+Delivered (slice 1):
+
+- zone SSL/TLS settings `get`/`update`;
+- Universal SSL `get`/`enable`/`disable`;
+- custom certificates `list`/`get`/`create`/`delete`;
+- certificate-pack `list`/`get`.
+
+Still open:
+
+- advanced certificate ordering / DCV workflows;
+- certificate-pack `create`/`edit`/`delete`;
+- remaining SSL subresources (analyze, recommendation, verification records);
+- mTLS;
+- rulesets;
+- waf;
+- cache rules;
+- redirect rules;
+- page rules where still applicable.
 
 ### v0.3 — Developer storage/services administration
 

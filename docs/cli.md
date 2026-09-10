@@ -93,6 +93,11 @@ flareadm
 │       ├── get
 │       ├── enable
 │       └── disable
+├── ssl
+│   ├── setting get|update
+│   ├── universal get|enable|disable
+│   └── certificate-pack list|get
+├── certificate list|get|create|delete
 ├── cache
 │   └── purge
 └── api
@@ -111,6 +116,9 @@ flareadm api request GET /zones
 HTTPS, LOC, NAPTR, SMIMEA, SRV, SSHFP, SVCB, TLSA, URI) through the Cloudflare `data`-field
 flags. The authoritative per-type flag list is `flareadm dns record create --help` and
 `flareadm dns record update --help`.
+
+`certificate create --private-key` accepts only the `@file` form (see
+[configuration.md](configuration.md)).
 
 ## Global options
 
