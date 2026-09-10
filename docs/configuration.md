@@ -82,7 +82,10 @@ FlareADM SHALL:
 - accept `certificate create --private-key` only as `@path`; inline private keys are rejected
   with exit 2 because process arguments are observable;
 - redact the resolved API token and any registered secret (private keys) from all error output
-  and diagnostics, not only under `--debug`.
+  and diagnostics, not only under `--debug`;
+- accept credentials and credential-bearing payloads in `@file` form only: `certificate create
+  --private-key`, `hyperdrive config --origin`, and `vectorize vector insert|upsert --vectors`;
+  inline values are rejected because process arguments are observable.
 
 ## Account resolution
 

@@ -114,6 +114,10 @@ flareadm
 │   ├── list|get|create|update|delete|metrics|purge
 │   ├── consumer list|get|create|update|delete
 │   └── message push|pull|peek|ack|delete
+├── hyperdrive config list|get|create|update|delete
+├── vectorize index list|get|create|delete|info
+│   ├── metadata list|create|delete
+│   └── vector insert|upsert|query|get|list
 ├── page-rule list|get|create|update|delete
 ├── cache
 │   ├── purge
@@ -149,6 +153,10 @@ Account-scoped groups (`r2`, `kv`) resolve the account through the standard reso
 
 `d1 database query|raw` print per-statement results (JSON keeps the full statement structure);
 `queue message` verbs use the shared confirmation rules for destructive operations.
+
+`hyperdrive config --origin` and `vectorize vector insert|upsert --vectors` are `@file`-only
+(the origin object and vector payloads carry credentials); both are registered as protected
+secrets and never appear in diagnostics or errors.
 
 ## Global options
 

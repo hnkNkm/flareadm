@@ -119,12 +119,17 @@ Delivered:
 - kv namespaces `list`/`get`/`create`/`delete` and keys `list`/`get`/`put`/`delete`;
 - d1 databases (`list`/`get`/`create`/`update`/`delete`, `query`/`raw`, `export`/`import`,
   `bookmark`, `restore`);
-- queues (`list`/`get`/`create`/`update`/`delete`, `metrics`, `purge`, consumers, messages).
+- queues (`list`/`get`/`create`/`update`/`delete`, `metrics`, `purge`, consumers, messages);
+- hyperdrive configs (`list`/`get`/`create`/`update`/`delete`);
+- vectorize indexes (`list`/`get`/`create`/`delete`/`info`, plus metadata and vector operations).
 
-Still open:
+Deferred in v0.3:
 
-- hyperdrive (in progress);
-- vectorize (in progress).
+- R2 objects and custom domains (S3 API with separate credentials);
+- KV bulk operations;
+- D1 `--fields` subset selection and read-replication status reads;
+- queue consumer typed settings (shipped as `--settings @file`);
+- D1 export polling convenience.
 
 The scope is remote administration only.
 
