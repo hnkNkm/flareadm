@@ -113,14 +113,17 @@ Still open:
 
 ### v0.3 — Developer storage/services administration
 
-```text
-r2
-kv
-d1
-queues
-hyperdrive
-vectorize
-```
+Delivered:
+
+- r2 buckets `list`/`get`/`create`/`delete`;
+- kv namespaces `list`/`get`/`create`/`delete` and keys `list`/`get`/`put`/`delete`.
+
+Still open:
+
+- d1 (in progress);
+- queues (in progress);
+- hyperdrive;
+- vectorize.
 
 The scope is remote administration only.
 

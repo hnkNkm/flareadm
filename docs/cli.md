@@ -101,10 +101,16 @@ flareadm
 ├── ruleset list|get|create|update|delete
 ├── waf
 │   └── ruleset list|get|update
+├── redirect
+│   └── rule list|get|create|update|delete
+├── r2
+│   └── bucket list|get|create|delete
+├── kv
+│   └── namespace list|get|create|delete
+│       └── key list|get|put|delete
+├── page-rule list|get|create|update|delete
 ├── cache
 │   ├── purge
-│   └── rule list|get|create|update|delete
-├── redirect
 │   └── rule list|get|create|update|delete
 └── api
     └── request
@@ -131,6 +137,9 @@ flags. The authoritative per-type flag list is `flareadm dns record create --hel
 Rulesets are the single mechanism behind WAF, cache and redirect rules. The phase-scoped
 `cache rule` and `redirect rule` commands edit the phase entrypoint rules array and preserve
 existing rules; `--rules @file` takes a Cloudflare rules array.
+
+Page rules are legacy: use `ruleset`, `cache rule` or `redirect rule` for new configuration.
+Account-scoped groups (`r2`, `kv`) resolve the account through the standard resolution order.
 
 ## Global options
 
