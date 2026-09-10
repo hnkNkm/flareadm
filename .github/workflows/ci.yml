@@ -38,5 +38,8 @@ jobs:
       - name: Lint
         run: nix develop -c golangci-lint run
 
+      - name: Vulnerability scan
+        run: nix develop -c govulncheck ./...
+
       - name: Cross-compile (windows/amd64)
         run: nix develop -c env GOOS=windows GOARCH=amd64 go build ./...

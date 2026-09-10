@@ -35,6 +35,9 @@ archives:
         formats:
           - zip
 
+sboms:
+  - artifacts: archive
+
 checksum:
   name_template: checksums.txt
 
