@@ -95,17 +95,21 @@ Delivered (slice 1):
 - custom certificates `list`/`get`/`create`/`delete`;
 - certificate-pack `list`/`get`.
 
+Delivered (slice 2):
+
+- rulesets `list`/`get`/`create`/`update`/`delete`;
+- WAF ruleset view `list`/`get`/`update`;
+- cache rules `list`/`get`/`create`/`update`/`delete`;
+- redirect rules `list`/`get`/`create`/`update`/`delete`.
+
 Still open:
 
 - advanced certificate ordering / DCV workflows;
 - certificate-pack `create`/`edit`/`delete`;
 - remaining SSL subresources (analyze, recommendation, verification records);
 - mTLS;
-- rulesets;
-- waf;
-- cache rules;
-- redirect rules;
-- page rules where still applicable.
+- page rules: legacy Page Rules API, superseded upstream by rulesets phases — deferred pending
+  SDK support.
 
 ### v0.3 — Developer storage/services administration
 

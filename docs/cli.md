@@ -98,8 +98,14 @@ flareadm
 │   ├── universal get|enable|disable
 │   └── certificate-pack list|get
 ├── certificate list|get|create|delete
+├── ruleset list|get|create|update|delete
+├── waf
+│   └── ruleset list|get|update
 ├── cache
-│   └── purge
+│   ├── purge
+│   └── rule list|get|create|update|delete
+├── redirect
+│   └── rule list|get|create|update|delete
 └── api
     └── request
 ```
@@ -119,6 +125,12 @@ flags. The authoritative per-type flag list is `flareadm dns record create --hel
 
 `certificate create --private-key` accepts only the `@file` form (see
 [configuration.md](configuration.md)).
+
+### Rules engine
+
+Rulesets are the single mechanism behind WAF, cache and redirect rules. The phase-scoped
+`cache rule` and `redirect rule` commands edit the phase entrypoint rules array and preserve
+existing rules; `--rules @file` takes a Cloudflare rules array.
 
 ## Global options
 
