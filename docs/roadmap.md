@@ -137,14 +137,24 @@ The scope is remote administration only.
 
 ### v0.4 — Zero Trust
 
-```text
-tunnel
-access
-gateway
-devices
-service tokens
-zero-trust configuration
-```
+Delivered:
+
+- tunnels (`list`/`get`/`create`/`update`/`delete`/`token`), tunnel connections
+  (`list`/`get`/`delete`) and remote `configuration get`/`update`;
+- private network routes `list`/`get`/`create`/`update`/`delete`;
+- organization `get`/`update`;
+- Access applications (`list`/`get`/`create`/`update`/`delete`) with application-scoped
+  policies;
+- Access reusable policies, groups, identity providers and service tokens
+  (`list`/`get`/`create`/`update`/`delete`/`rotate`);
+- Gateway rules, lists (with items) and locations;
+- device registrations, the physical-device fleet, posture rules and account device settings.
+
+Deferred in v0.4:
+
+- DEX / device-experience endpoints;
+- GraphQL-only surfaces;
+- mTLS certificates.
 
 ### v0.5 — Workers platform administration
 

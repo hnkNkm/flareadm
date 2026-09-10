@@ -118,6 +118,32 @@ flareadm
 ├── vectorize index list|get|create|delete|info
 │   ├── metadata list|create|delete
 │   └── vector insert|upsert|query|get|list
+├── zero-trust
+│   ├── tunnel
+│   │   ├── list|get|create|update|delete|token
+│   │   ├── connection list|get|delete
+│   │   └── configuration get|update
+│   ├── route list|get|create|update|delete
+│   ├── organization get|update
+│   ├── access
+│   │   ├── app
+│   │   │   ├── list|get|create|update|delete
+│   │   │   └── policy list|get|create|update|delete
+│   │   ├── policy list|get|create|update|delete
+│   │   ├── group list|get|create|update|delete
+│   │   ├── identity-provider list|get|create|update|delete
+│   │   └── service-token list|get|create|update|delete|rotate
+│   ├── gateway
+│   │   ├── rule list|get|create|update|delete
+│   │   ├── list
+│   │   │   ├── list|get|create|update|delete
+│   │   │   └── item list|create|delete
+│   │   └── location list|get|create|update|delete
+│   └── device
+│       ├── list|get
+│       ├── physical-device list|get|delete|revoke
+│       ├── posture list|get|create|update|delete
+│       └── settings get|update
 ├── page-rule list|get|create|update|delete
 ├── cache
 │   ├── purge
