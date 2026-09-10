@@ -100,16 +100,16 @@ Delivered (slice 2):
 - rulesets `list`/`get`/`create`/`update`/`delete`;
 - WAF ruleset view `list`/`get`/`update`;
 - cache rules `list`/`get`/`create`/`update`/`delete`;
-- redirect rules `list`/`get`/`create`/`update`/`delete`.
+- redirect rules `list`/`get`/`create`/`update`/`delete`;
+- page rules `list`/`get`/`create`/`update`/`delete` (legacy; new configuration should use
+  rulesets phases).
 
 Still open:
 
 - advanced certificate ordering / DCV workflows;
 - certificate-pack `create`/`edit`/`delete`;
 - remaining SSL subresources (analyze, recommendation, verification records);
-- mTLS;
-- page rules: legacy Page Rules API, superseded upstream by rulesets phases — deferred pending
-  SDK support.
+- mTLS.
 
 ### v0.3 — Developer storage/services administration
 
