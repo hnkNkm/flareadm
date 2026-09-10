@@ -29,6 +29,7 @@ import (
 
 	"github.com/hnkNkm/flareadm/internal/cloudflare"
 	"github.com/hnkNkm/flareadm/internal/errors"
+	"github.com/hnkNkm/flareadm/internal/pagination"
 	"github.com/hnkNkm/flareadm/internal/version"
 )
 
@@ -493,8 +494,8 @@ func TestZoneGetByNameResolution(t *testing.T) {
 	}
 	// name lookup: GET /zones?name=... then GET /zones/{id}
 	reqs := api.requests()
-	if len(reqs) != 3 || reqs[0].Path != "/zones" || !strings.Contains(reqs[0].Query, "page=1") ||
-		reqs[1].Path != "/zones" || reqs[2].Path != "/zones/"+zoneID {
+	if len(reqs) != 2 || reqs[0].Path != "/zones" || !strings.Contains(reqs[0].Query, "page=1") ||
+		reqs[1].Path != "/zones/"+zoneID {
 		t.Fatalf("requests = %+v", reqs)
 	}
 }
@@ -512,7 +513,6 @@ func TestZoneListPaginationFlags(t *testing.T) {
 					}
 				}
 			}
-			t.Logf("handler page=%d per_page=%q", page, perPage)
 			if perPage == "1" {
 				// one item per page, three pages total
 				if page > 3 {
@@ -521,11 +521,15 @@ func TestZoneListPaginationFlags(t *testing.T) {
 				return 200, envelope([]any{zoneJSON(fmt.Sprintf("%032d", page), fmt.Sprintf("z%d.example", page), "active")})
 			}
 			if page > 1 {
-				t.Logf("server: page=%d returning empty result", page)
 				return 200, envelope([]any{})
 			}
-			t.Logf("server: page=%d returning 2 zones", page)
-			return 200, envelope([]any{zoneJSON(zoneID, "example.com", "active"), zoneJSON("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "two.example", "active")})
+			// A full page for the default per_page=100, so the short-page
+			// stop rule does not end the loop after page 1.
+			items := make([]any, 0, 100)
+			for i := 0; i < 100; i++ {
+				items = append(items, zoneJSON(fmt.Sprintf("%032d", i), fmt.Sprintf("z%d.example", i), "active"))
+			}
+			return 200, envelope(items)
 		}
 		s, b := apiErr(404, 0, "nope")
 		return s, b
@@ -1612,8 +1616,8 @@ func TestSSLCertificatePackListGet(t *testing.T) {
 		t.Fatalf("query = %q", first.Query)
 	}
 	// auto-pagination: page 1 + terminating empty page
-	if api.count() != 2 {
-		t.Fatalf("requests = %d, want 2 (page 1 + empty)", api.count())
+	if api.count() != 1 {
+		t.Fatalf("requests = %d, want 1 (short page terminates)", api.count())
 	}
 	if !strings.Contains(res.stdout, `"id": "pack1"`) || !strings.Contains(res.stdout, `"*.example.com"`) {
 		t.Fatalf("list output = %s", res.stdout)
@@ -1655,8 +1659,8 @@ func TestCertificateListGet(t *testing.T) {
 	if first.Path != "/zones/"+zoneID+"/certificates" || !strings.Contains(first.Query, "status=active") {
 		t.Fatalf("request = %+v", first)
 	}
-	if api.count() != 2 {
-		t.Fatalf("requests = %d, want 2 (page 1 + empty)", api.count())
+	if api.count() != 1 {
+		t.Fatalf("requests = %d, want 1 (short page terminates)", api.count())
 	}
 	if !strings.Contains(res.stdout, `"secure.example.com"`) || !strings.Contains(res.stdout, `"status": "active"`) {
 		t.Fatalf("list output = %s", res.stdout)
@@ -2811,8 +2815,8 @@ func TestKVNamespaceCRUD(t *testing.T) {
 	if res.code != 0 {
 		t.Fatalf("list: code=%d stderr=%q", res.code, res.stderr)
 	}
-	if api.count() != 2 {
-		t.Fatalf("list requests = %d, want 2 (page 1 + empty page 2)", api.count())
+	if api.count() != 1 {
+		t.Fatalf("list requests = %d, want 1 (short page terminates)", api.count())
 	}
 	if !strings.Contains(res.stdout, `"id": "ns1"`) || !strings.Contains(res.stdout, "my namespace") {
 		t.Fatalf("list output = %s", res.stdout)
@@ -3215,8 +3219,8 @@ func TestD1DatabaseCRUD(t *testing.T) {
 	if res.code != 0 {
 		t.Fatalf("list: code=%d stderr=%q", res.code, res.stderr)
 	}
-	if api.count() != 2 {
-		t.Fatalf("list requests = %d, want 2 (page pagination)", api.count())
+	if api.count() != 1 {
+		t.Fatalf("list requests = %d, want 1 (short page terminates)", api.count())
 	}
 	if !strings.Contains(api.requests()[0].Query, "name=app-db") {
 		t.Fatalf("list query = %q", api.requests()[0].Query)
@@ -4129,8 +4133,8 @@ func TestHyperdriveConfigCRUD(t *testing.T) {
 	if res.code != 0 {
 		t.Fatalf("list: code=%d stderr=%q", res.code, res.stderr)
 	}
-	if api.count() != 2 {
-		t.Fatalf("list requests = %d, want 2 pages", api.count())
+	if api.count() != 1 {
+		t.Fatalf("list requests = %d, want 1 (short page terminates)", api.count())
 	}
 	if !strings.Contains(res.stdout, `"id": "hd1"`) || !strings.Contains(res.stdout, "db.example.com") {
 		t.Fatalf("list output = %s", res.stdout)
@@ -4510,5 +4514,95 @@ func TestVectorizeMetadataIndexes(t *testing.T) {
 	}
 	if got := decodeRequestBody(t, api.last().Body); !reflect.DeepEqual(got, map[string]any{"propertyName": "lang"}) {
 		t.Fatalf("delete body = %#v", got)
+	}
+}
+
+// ---- pagination loop-guard regressions ------------------------------------
+
+func TestPaginationTotalPagesStopsLoop(t *testing.T) {
+	// A full page with result_info.total_pages=1: exactly one request.
+	api := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		if method == "GET" && path == "/zones" {
+			items := make([]any, 0, 100)
+			for i := 0; i < 100; i++ {
+				items = append(items, zoneJSON(fmt.Sprintf("%032d", i), fmt.Sprintf("z%d.example", i), "active"))
+			}
+			return 200, envelopeWithInfo(items, map[string]any{"page": 1, "per_page": 100, "count": 100, "total_count": 100, "total_pages": 1})
+		}
+		s, b := apiErr(404, 0, "nope")
+		return s, b
+	})
+	setToken(t, "tok")
+	newHome(t)
+	res := runCLI(t, "zone", "list", "--zone", zoneID, "--json", "--endpoint-url", api.srv.URL)
+	if res.code != 0 {
+		t.Fatalf("code=%d stderr=%q", res.code, res.stderr)
+	}
+	if api.count() != 1 {
+		t.Fatalf("requests = %d, want exactly 1 (total_pages=1)", api.count())
+	}
+	var env struct {
+		Meta struct {
+			Count int `json:"count"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal([]byte(res.stdout), &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.Meta.Count != 100 {
+		t.Fatalf("count = %d, want 100", env.Meta.Count)
+	}
+}
+
+func TestPaginationEndlessFullPageFailsBounded(t *testing.T) {
+	// The API always returns a full page and no result_info: the loop must
+	// stop at the documented safety cap with a clear diagnostic (exit 1:
+	// the API never reached a terminal page, which is not a usage error).
+	api := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		if method == "GET" && path == "/zones" {
+			items := make([]any, 0, 100)
+			for i := 0; i < 100; i++ {
+				items = append(items, zoneJSON(fmt.Sprintf("%032d", i), fmt.Sprintf("z%d.example", i), "active"))
+			}
+			return 200, envelope(items)
+		}
+		s, b := apiErr(404, 0, "nope")
+		return s, b
+	})
+	setToken(t, "tok")
+	newHome(t)
+	res := runCLI(t, "zone", "list", "--zone", zoneID, "--endpoint-url", api.srv.URL)
+	if res.code != errors.CodeUnclassified {
+		t.Fatalf("code=%d, want 1 (stderr=%q)", res.code, res.stderr)
+	}
+	if !strings.Contains(res.stderr, "pagination safety limit exceeded") {
+		t.Fatalf("diagnostic missing: %q", res.stderr)
+	}
+	if got := api.count(); got != pagination.MaxPages {
+		t.Fatalf("requests = %d, want exactly MaxPages (%d)", got, pagination.MaxPages)
+	}
+}
+
+func TestPaginationRepeatedCursorTerminates(t *testing.T) {
+	// A cursor endpoint that keeps returning the same cursor must not loop.
+	api := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		if method == "GET" && path == "/zones/"+zoneID+"/rulesets" {
+			return 200, envelopeWithInfo([]any{rulesetJSON("rs1", "waf", "http_request_firewall_managed", "managed")},
+				map[string]any{"count": 1, "per_page": 100, "cursor": "c2"})
+		}
+		s, b := apiErr(404, 0, "nope")
+		return s, b
+	})
+	setToken(t, "tok")
+	newHome(t)
+	res := runCLI(t, "ruleset", "list", "--zone", zoneID, "--endpoint-url", api.srv.URL)
+	if res.code != errors.CodeUnclassified {
+		t.Fatalf("code=%d, want 1 (stderr=%q)", res.code, res.stderr)
+	}
+	if !strings.Contains(res.stderr, "repeated the same cursor") {
+		t.Fatalf("diagnostic missing: %q", res.stderr)
+	}
+	if got := api.count(); got > 2 {
+		t.Fatalf("requests = %d, want the loop to stop as soon as the cursor repeats", got)
 	}
 }

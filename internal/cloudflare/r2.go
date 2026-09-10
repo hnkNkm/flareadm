@@ -65,6 +65,7 @@ func (c *Client) ListR2Buckets(ctx context.Context, accountID string, q R2Bucket
 		rawBuckets []json.RawMessage
 		bodies     [][]byte
 		cursor     string
+		guard      = pagination.NewCursorGuard()
 	)
 	count := func() int {
 		if c.raw {
@@ -74,6 +75,9 @@ func (c *Client) ListR2Buckets(ctx context.Context, accountID string, q R2Bucket
 	}
 
 	for {
+		if err := guard.Step(cursor); err != nil {
+			return nil, err
+		}
 		query := url.Values{}
 		query.Set("per_page", strconv.Itoa(perPage))
 		if cursor != "" {

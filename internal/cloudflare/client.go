@@ -230,16 +230,20 @@ func fetchPages[T any](ctx context.Context, c *Client, lq listQuery, fetch func(
 	perPage := pageSize(lq.pol)
 	var pageBodies [][]byte
 
-	items, _, err := pagination.Collect(ctx, lq.pol, func(ctx context.Context, pageNum int) ([]T, error) {
+	items, _, err := pagination.Collect(ctx, lq.pol, func(ctx context.Context, pageNum int) ([]T, pagination.PageMeta, error) {
 		q := cloneValues(lq.q)
 		q.Set("page", strconv.Itoa(pageNum))
 		q.Set("per_page", strconv.Itoa(perPage))
 		env, raw, err := c.requestJSON(ctx, "GET", lq.path, q, nil, "")
 		if err != nil {
-			return nil, err
+			return nil, pagination.PageMeta{}, err
 		}
 		pageBodies = append(pageBodies, raw)
-		return fetch(ctx, pageNum, env)
+		items, err := fetch(ctx, pageNum, env)
+		if err != nil {
+			return nil, pagination.PageMeta{}, err
+		}
+		return items, pageMetaFromResultInfo(env.ResultInfo, perPage), nil
 	})
 	if err != nil {
 		return nil, pageBodies, err
@@ -345,6 +349,25 @@ func cloneValues(v url.Values) url.Values {
 		out[k] = append([]string(nil), vals...)
 	}
 	return out
+}
+
+// pageMetaFromResultInfo extracts the pagination stop conditions from a
+// result_info block: total_pages for page-based endpoints and the next
+// cursor for cursor-based ones.
+func pageMetaFromResultInfo(raw json.RawMessage, perPage int) pagination.PageMeta {
+	meta := pagination.PageMeta{RequestedPageSize: perPage}
+	if len(raw) == 0 {
+		return meta
+	}
+	var info resultInfo
+	if err := json.Unmarshal(raw, &info); err == nil {
+		meta.TotalPages = info.TotalPages
+	}
+	if cursor := nextCursor(raw); cursor != "" {
+		meta.CursorBased = true
+		meta.NextCursor = cursor
+	}
+	return meta
 }
 
 // decodeResult decodes an envelope result into out (pointer to value or

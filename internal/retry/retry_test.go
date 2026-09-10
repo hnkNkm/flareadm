@@ -232,3 +232,68 @@ func TestAttemptTimeout(t *testing.T) {
 		t.Fatal("expected timeout error")
 	}
 }
+
+// TestResponseBodyReadableAfterMiddlewareReturns proves the per-attempt
+// context is not cancelled when the middleware returns: the caller still has
+// to read the body (previously this failed intermittently with
+// "error reading response body: context canceled").
+func TestResponseBodyReadableAfterMiddlewareReturns(t *testing.T) {
+	readBody := func(t *testing.T, method string, handler http.HandlerFunc, cfg Config) string {
+		t.Helper()
+		res, err := runWithServer(t, handler, New(cfg), method, nil)
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
+		defer func() { _ = res.Body.Close() }()
+		body, err := io.ReadAll(res.Body)
+		if err != nil {
+			t.Fatalf("reading body: %v", err)
+		}
+		return string(body)
+	}
+	// The handler flushes headers immediately, then sends the body after a
+	// delay, so the middleware has already returned when the body arrives.
+	delayed := func(status int, payload string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(status)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			time.Sleep(60 * time.Millisecond)
+			_, _ = io.WriteString(w, payload)
+		}
+	}
+	cfg := Config{MaxAttempts: 3, BaseDelay: time.Millisecond, AttemptTimeout: 5 * time.Second}
+
+	t.Run("non-retryable", func(t *testing.T) {
+		if got := readBody(t, http.MethodGet, delayed(http.StatusOK, "payload-ok"), cfg); got != "payload-ok" {
+			t.Fatalf("body = %q", got)
+		}
+	})
+	t.Run("unsafe method non-retried", func(t *testing.T) {
+		if got := readBody(t, http.MethodPost, delayed(http.StatusOK, "payload-post"), cfg); got != "payload-post" {
+			t.Fatalf("body = %q", got)
+		}
+	})
+	t.Run("retryable then success", func(t *testing.T) {
+		var hits int32
+		handler := func(w http.ResponseWriter, r *http.Request) {
+			if atomic.AddInt32(&hits, 1) == 1 {
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			time.Sleep(60 * time.Millisecond)
+			_, _ = io.WriteString(w, "payload-after-retry")
+		}
+		if got := readBody(t, http.MethodGet, handler, cfg); got != "payload-after-retry" {
+			t.Fatalf("body = %q", got)
+		}
+		if atomic.LoadInt32(&hits) != 2 {
+			t.Fatalf("hits = %d, want 2", hits)
+		}
+	})
+}

@@ -114,8 +114,8 @@ func TestListAccountsNormalized(t *testing.T) {
 	if q := f.reqs[0].URL.Query(); q.Get("per_page") != "100" || q.Get("page") != "1" {
 		t.Fatalf("query = %v", q)
 	}
-	if f.count() != 2 {
-		t.Fatalf("requests = %d, want 2 (page 1 + terminating empty page)", f.count())
+	if f.count() != 1 {
+		t.Fatalf("requests = %d, want 1 (a short page terminates the loop)", f.count())
 	}
 }
 
@@ -223,6 +223,8 @@ func TestEnvelopeSuccessFalseOn200(t *testing.T) {
 }
 
 func TestPaginationAcrossPages(t *testing.T) {
+	// Page 1 is full (2 items == requested page size), page 2 is short: the
+	// loop must stop there without a terminating empty request.
 	f := newFake(t)
 	var pages int32
 	f.handle("/zones", func(w http.ResponseWriter, r *http.Request) {
@@ -251,8 +253,8 @@ func TestPaginationAcrossPages(t *testing.T) {
 	if len(res.Items) != 3 {
 		t.Fatalf("items = %d, want 3", len(res.Items))
 	}
-	if got := atomic.LoadInt32(&pages); got != 3 {
-		t.Fatalf("pages fetched = %d, want 3 (2 + terminating empty page)", got)
+	if got := atomic.LoadInt32(&pages); got != 2 {
+		t.Fatalf("pages fetched = %d, want 2 (the second page is short)", got)
 	}
 }
 
@@ -327,7 +329,15 @@ func TestRawModeMultiPageMerged(t *testing.T) {
 func TestMaxItemsStopsFetching(t *testing.T) {
 	f := newFake(t)
 	f.handle("/zones", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = fmt.Fprint(w, envBody(t, []map[string]any{{"id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "name": "z", "status": "active"}}))
+		if r.URL.Query().Get("page") == "3" {
+			_, _ = fmt.Fprint(w, envBody(t, []any{}))
+			return
+		}
+		// Full pages of the requested size so --max-items is the stop.
+		_, _ = fmt.Fprint(w, envBody(t, []map[string]any{
+			{"id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "name": "z1", "status": "active"},
+			{"id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "name": "z2", "status": "active"},
+		}))
 	})
 	c := newClient(t, f)
 	res, err := c.ListZones(context.Background(), ZoneListQuery{}, pagination.Policy{PageSize: 2, MaxItems: 3})
@@ -337,8 +347,8 @@ func TestMaxItemsStopsFetching(t *testing.T) {
 	if len(res.Items) != 3 {
 		t.Fatalf("items = %d, want 3", len(res.Items))
 	}
-	if f.count() != 3 {
-		t.Fatalf("requests = %d, want 3", f.count())
+	if f.count() != 2 {
+		t.Fatalf("requests = %d, want 2 (--max-items reached inside page 2)", f.count())
 	}
 }
 

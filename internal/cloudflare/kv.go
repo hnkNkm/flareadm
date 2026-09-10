@@ -103,6 +103,7 @@ func (c *Client) ListKVKeys(ctx context.Context, accountID, namespaceID string, 
 		rawKeys []json.RawMessage
 		bodies  [][]byte
 		cursor  string
+		guard   = pagination.NewCursorGuard()
 	)
 	count := func() int {
 		if c.raw {
@@ -112,6 +113,9 @@ func (c *Client) ListKVKeys(ctx context.Context, accountID, namespaceID string, 
 	}
 
 	for {
+		if err := guard.Step(cursor); err != nil {
+			return nil, err
+		}
 		query := url.Values{}
 		query.Set("limit", strconv.Itoa(limit))
 		if cursor != "" {

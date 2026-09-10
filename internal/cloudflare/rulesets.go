@@ -146,6 +146,7 @@ func (c *Client) ListRulesets(ctx context.Context, scope RulesetScope, q Ruleset
 		rawItems []json.RawMessage
 		bodies   [][]byte
 		cursor   string
+		guard    = pagination.NewCursorGuard()
 	)
 	maxReached := func() bool {
 		if pol.MaxItems <= 0 {
@@ -158,6 +159,9 @@ func (c *Client) ListRulesets(ctx context.Context, scope RulesetScope, q Ruleset
 	}
 
 	for {
+		if err := guard.Step(cursor); err != nil {
+			return nil, err
+		}
 		query := url.Values{}
 		query.Set("per_page", strconv.Itoa(perPage))
 		if cursor != "" {

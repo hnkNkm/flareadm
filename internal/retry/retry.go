@@ -25,10 +25,26 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/hnkNkm/flareadm/internal/logging"
 )
+
+// cancelOnCloseBody ties a per-attempt context's cancellation to the
+// response body lifecycle, so reading the body after this middleware returns
+// can never observe a canceled context.
+type cancelOnCloseBody struct {
+	io.ReadCloser
+	once   sync.Once
+	cancel context.CancelFunc
+}
+
+func (b *cancelOnCloseBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.once.Do(b.cancel)
+	return err
+}
 
 // DefaultMaxAttempts is the total number of attempts for one logical
 // request (1 initial + 3 retries).
@@ -114,14 +130,18 @@ func New(cfg Config) Middleware {
 					attemptReq.Body = body
 				}
 			}
+			var attemptCancel context.CancelFunc
 			if cfg.AttemptTimeout > 0 {
 				ctx, cancel := context.WithTimeout(attemptReq.Context(), cfg.AttemptTimeout)
+				attemptCancel = cancel
 				attemptReq = attemptReq.Clone(ctx)
-				defer cancel()
 			}
 
 			res, err := next(attemptReq)
 			if err != nil {
+				if attemptCancel != nil {
+					attemptCancel()
+				}
 				lastErr = err
 				if !idempotent {
 					logf(cfg.Logger, "%s %s: transport error, not retrying unsafe method: %v", req.Method, req.URL, err)
@@ -135,6 +155,14 @@ func New(cfg Config) Middleware {
 					return nil, lastErr
 				}
 				continue
+			}
+
+			// The per-attempt context must outlive this middleware call:
+			// the caller still has to read the response body. Cancel it
+			// when the body is closed instead.
+			if attemptCancel != nil {
+				res.Body = &cancelOnCloseBody{ReadCloser: res.Body, cancel: attemptCancel}
+				attemptCancel = nil
 			}
 
 			lastRes = res
