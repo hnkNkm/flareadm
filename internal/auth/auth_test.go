@@ -75,6 +75,14 @@ func TestResolvePrecedence(t *testing.T) {
 }
 
 func TestRequireNoToken(t *testing.T) {
+	// Hermetic: the developer's shell may export a real token, which would make
+	// this test pass for the wrong reason. t.Setenv registers a cleanup that
+	// restores the previous value, and unsets the variable when it was not set
+	// before; auth resolves tokens with os.Getenv, so an empty value is
+	// indistinguishable from an unset one.
+	for _, key := range CredentialEnvOrder {
+		t.Setenv(key, "")
+	}
 	_, err := Require(nil)
 	if err == nil {
 		t.Fatal("Require should fail without any token")
