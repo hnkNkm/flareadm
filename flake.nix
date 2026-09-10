@@ -63,6 +63,7 @@
             gopls
             gotools
             golangci-lint
+            govulncheck
             delve
             goreleaser
             git
