@@ -1912,3 +1912,580 @@ func selfSignedCert(t *testing.T, host string) (certPEM, keyPEM string) {
 	keyPEM = string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}))
 	return certPEM, keyPEM
 }
+
+// ---- v0.2 slice 2: rulesets / waf / cache rules / redirect rules ----------
+
+func envelopeWithInfo(result any, info any) string {
+	b, _ := json.Marshal(map[string]any{
+		"success": true, "errors": []any{}, "messages": []any{},
+		"result": result, "result_info": info,
+	})
+	return string(b)
+}
+
+func cursorPage(items []any, cursor string) string {
+	return envelopeWithInfo(items, map[string]any{"count": len(items), "per_page": 100, "cursor": cursor})
+}
+
+func rulesetJSON(id, name, phase, kind string) map[string]any {
+	return map[string]any{
+		"id": id, "name": name, "phase": phase, "kind": kind,
+		"version": "1", "description": "desc",
+		"last_updated": "2025-01-01T00:00:00Z",
+	}
+}
+
+func rulesetDetailJSON(id, name, phase, kind string) map[string]any {
+	out := rulesetJSON(id, name, phase, kind)
+	out["rules"] = []any{map[string]any{
+		"id": "r1", "action": "block", "expression": `(http.host eq "x.example.com")`,
+		"description": "block it", "enabled": true, "ref": "myref",
+		"action_parameters": map[string]any{"a": 1},
+		"extra":             "keep-me",
+	}}
+	return out
+}
+
+func entrypointJSON(phase string) map[string]any {
+	return map[string]any{
+		"id": "ep-" + phase, "name": "phase entrypoint", "phase": phase,
+		"version": "1", "last_updated": "2025-01-01T00:00:00Z",
+		"rules": []any{map[string]any{
+			"id": "rule1", "action": "set_cache_settings", "expression": `(http.host eq "cache.example.com")`,
+			"description": "cache all", "enabled": true,
+			"action_parameters": map[string]any{"cache": true},
+			"extra":             "keep-me",
+		}},
+	}
+}
+
+// rulesAPI serves rulesets and phase entrypoints for the v0.2 slice 2 tests.
+func rulesAPI(t *testing.T) *apiStub {
+	return newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		switch {
+		case method == "GET" && path == "/zones/"+zoneID+"/rulesets":
+			if strings.Contains(r.Query, "cursor=c2") {
+				return 200, cursorPage([]any{rulesetJSON("rs3", "cache rules", "http_request_cache_settings", "zone")}, "")
+			}
+			return 200, cursorPage([]any{
+				rulesetJSON("rs1", "managed waf", "http_request_firewall_managed", "managed"),
+				rulesetJSON("rs2", "custom waf", "http_request_firewall_custom", "zone"),
+			}, "c2")
+		case method == "GET" && path == "/accounts/"+accountID+"/rulesets":
+			return 200, cursorPage([]any{rulesetJSON("ars1", "acct rules", "http_request_firewall_custom", "custom")}, "")
+		case method == "GET" && path == "/zones/"+zoneID+"/rulesets/rs1":
+			return 200, envelope(rulesetDetailJSON("rs1", "managed waf", "http_request_firewall_managed", "managed"))
+		case method == "GET" && path == "/zones/"+zoneID+"/rulesets/rs3":
+			return 200, envelope(rulesetJSON("rs3", "cache rules", "http_request_cache_settings", "zone"))
+		case method == "POST" && path == "/zones/"+zoneID+"/rulesets":
+			return 200, envelope(rulesetDetailJSON("rsnew", "new rules", "http_request_firewall_custom", "zone"))
+		case method == "PUT" && path == "/zones/"+zoneID+"/rulesets/rs1":
+			return 200, envelope(rulesetDetailJSON("rs1", "managed waf", "http_request_firewall_managed", "managed"))
+		case method == "DELETE" && path == "/zones/"+zoneID+"/rulesets/rs1":
+			return 200, envelope(map[string]any{"id": "rs1"})
+		case strings.HasPrefix(path, "/zones/"+zoneID+"/rulesets/phases/") && strings.HasSuffix(path, "/entrypoint"):
+			phase := strings.TrimSuffix(strings.TrimPrefix(path, "/zones/"+zoneID+"/rulesets/phases/"), "/entrypoint")
+			switch method {
+			case "GET":
+				return 200, envelope(entrypointJSON(phase))
+			case "PUT":
+				var body map[string]any
+				_ = json.Unmarshal([]byte(r.Body), &body)
+				return 200, envelope(map[string]any{
+					"id": "ep-" + phase, "name": "phase entrypoint", "phase": phase,
+					"version": "2", "last_updated": "2025-01-02T00:00:00Z",
+					"rules": body["rules"],
+				})
+			}
+		}
+		s, b := apiErr(404, 7000, "not found")
+		return s, b
+	})
+}
+
+func TestRulesetListAndGet(t *testing.T) {
+	api := rulesAPI(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+
+	res := runCLI(t, "ruleset", "list", "--zone", zoneID, "--json", "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("list: code=%d stderr=%q", res.code, res.stderr)
+	}
+	reqs := api.requests()
+	if len(reqs) != 2 {
+		t.Fatalf("requests = %d, want 2 (cursor pages)", len(reqs))
+	}
+	if !strings.Contains(reqs[0].Query, "per_page=100") || strings.Contains(reqs[0].Query, "cursor=") {
+		t.Fatalf("first page query = %q", reqs[0].Query)
+	}
+	if !strings.Contains(reqs[1].Query, "cursor=c2") {
+		t.Fatalf("second page query = %q", reqs[1].Query)
+	}
+	var env struct {
+		Data []map[string]any `json:"data"`
+		Meta struct {
+			Count int `json:"count"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal([]byte(res.stdout), &env); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	if env.Meta.Count != 3 || env.Data[0]["id"] != "rs1" || env.Data[2]["id"] != "rs3" {
+		t.Fatalf("data = %+v", env.Data)
+	}
+
+	// Client-side phase filter.
+	api.mu.Lock()
+	api.reqs = nil
+	api.mu.Unlock()
+	res = runCLI(t, "ruleset", "list", "--zone", zoneID, "--phase", "http_request_firewall_managed", "--json", "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("filtered: code=%d", res.code)
+	}
+	if err := json.Unmarshal([]byte(res.stdout), &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.Meta.Count != 1 || env.Data[0]["id"] != "rs1" {
+		t.Fatalf("filtered data = %+v", env.Data)
+	}
+
+	// get
+	res = runCLI(t, "ruleset", "get", "rs1", "--zone", zoneID, "--json", "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("get: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Method != "GET" || req.Path != "/zones/"+zoneID+"/rulesets/rs1" {
+		t.Fatalf("get request = %+v", req)
+	}
+	if !strings.Contains(res.stdout, `"action": "block"`) || !strings.Contains(res.stdout, `"phase": "http_request_firewall_managed"`) {
+		t.Fatalf("get output = %s", res.stdout)
+	}
+
+	// account scope uses /accounts/... and never resolves a zone.
+	api.mu.Lock()
+	api.reqs = nil
+	api.mu.Unlock()
+	res = runCLI(t, "ruleset", "list", "--account-id", accountID, "--json", "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("account: code=%d stderr=%q", res.code, res.stderr)
+	}
+	reqs = api.requests()
+	if len(reqs) != 1 || reqs[0].Path != "/accounts/"+accountID+"/rulesets" {
+		t.Fatalf("account requests = %+v", reqs)
+	}
+
+	// scope and usage errors
+	if res := runCLI(t, "ruleset", "list", "--zone", zoneID, "--account-id", accountID, "--endpoint-url", ep); res.code != errors.CodeInvalid {
+		t.Fatalf("both scopes: code=%d", res.code)
+	}
+	if res := runCLI(t, "ruleset", "list"); res.code != errors.CodeInvalid {
+		t.Fatalf("missing scope: code=%d", res.code)
+	}
+	if res := runCLI(t, "ruleset", "list", "--zone", zoneID, "--kind", "bogus", "--endpoint-url", ep); res.code != errors.CodeInvalid {
+		t.Fatalf("bad kind: code=%d", res.code)
+	}
+
+	// error mapping
+	api404 := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		s, b := apiErr(404, 7000, "ruleset not found")
+		return s, b
+	})
+	if res := runCLI(t, "ruleset", "get", "rs1", "--zone", zoneID, "--endpoint-url", api404.srv.URL); res.code != errors.CodeNotFound {
+		t.Fatalf("404: code=%d, want 5", res.code)
+	}
+	api403 := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		s, b := apiErr(403, 9109, "forbidden")
+		return s, b
+	})
+	if res := runCLI(t, "ruleset", "list", "--zone", zoneID, "--endpoint-url", api403.srv.URL); res.code != errors.CodePermission {
+		t.Fatalf("403: code=%d, want 4", res.code)
+	}
+}
+
+func TestRulesetCreate(t *testing.T) {
+	api := rulesAPI(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+
+	rulesFile := filepath.Join(t.TempDir(), "rules.json")
+	rules := `[{"action":"block","expression":"(http.host eq \"x\")","description":"d"}]`
+	_ = os.WriteFile(rulesFile, []byte(rules), 0o600)
+
+	res := runCLI(t, "ruleset", "create", "--zone", zoneID,
+		"--phase", "http_request_firewall_custom", "--name", "new rules",
+		"--description", "desc", "--rules", "@"+rulesFile, "--json", "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("create: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Method != "POST" || req.Path != "/zones/"+zoneID+"/rulesets" || strings.Contains(req.Query, "dry_run") {
+		t.Fatalf("create request = %+v", req)
+	}
+	got := decodeRequestBody(t, req.Body)
+	want := map[string]any{
+		"kind": "zone", "name": "new rules", "phase": "http_request_firewall_custom",
+		"description": "desc",
+		"rules": []any{map[string]any{
+			"action": "block", "expression": `(http.host eq "x")`, "description": "d",
+		}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("create body mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+	if !strings.Contains(res.stdout, `"id": "rsnew"`) {
+		t.Fatalf("create output = %s", res.stdout)
+	}
+
+	// dry-run: API-native validation, preview output, no confirm.
+	api.mu.Lock()
+	api.reqs = nil
+	api.mu.Unlock()
+	res = runCLI(t, "ruleset", "create", "--zone", zoneID,
+		"--phase", "http_request_firewall_custom", "--name", "new rules", "--dry-run", "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("dry-run: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if !strings.Contains(req.Query, "dry_run=true") {
+		t.Fatalf("dry-run query = %q", req.Query)
+	}
+	if !strings.Contains(res.stdout, "Would create ruleset") {
+		t.Fatalf("dry-run preview = %q", res.stdout)
+	}
+
+	// validation
+	for _, args := range [][]string{
+		{"ruleset", "create", "--zone", zoneID, "--name", "x", "--endpoint-url", ep},
+		{"ruleset", "create", "--zone", zoneID, "--phase", "p", "--endpoint-url", ep},
+		{"ruleset", "create", "--zone", zoneID, "--phase", "p", "--name", "x", "--kind", "managed", "--endpoint-url", ep},
+		{"ruleset", "create", "--zone", zoneID, "--phase", "p", "--name", "x", "--rules", `{"not":"array"}`, "--endpoint-url", ep},
+		{"ruleset", "create", "--account-id", accountID, "--phase", "p", "--name", "x", "--endpoint-url", ep},
+	} {
+		if res := runCLI(t, args...); res.code != errors.CodeInvalid {
+			t.Fatalf("%v: code=%d, want 2 (stderr=%q)", args, res.code, res.stderr)
+		}
+	}
+}
+
+func TestRulesetUpdatePreservesRules(t *testing.T) {
+	api := rulesAPI(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+
+	// Renaming must keep the existing rules verbatim (including unknown fields).
+	res := runCLI(t, "ruleset", "update", "rs1", "--zone", zoneID, "--name", "renamed", "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("update: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Method != "PUT" || req.Path != "/zones/"+zoneID+"/rulesets/rs1" {
+		t.Fatalf("update request = %+v", req)
+	}
+	got := decodeRequestBody(t, req.Body)
+	if got["name"] != "renamed" || got["kind"] != "managed" || got["phase"] != "http_request_firewall_managed" {
+		t.Fatalf("update body = %#v", got)
+	}
+	for _, forbidden := range []string{"id", "version", "last_updated"} {
+		if _, ok := got[forbidden]; ok {
+			t.Fatalf("update body must not carry %q: %#v", forbidden, got)
+		}
+	}
+	rulesArr, ok := got["rules"].([]any)
+	if !ok || len(rulesArr) != 1 {
+		t.Fatalf("rules = %#v", got["rules"])
+	}
+	rule := rulesArr[0].(map[string]any)
+	if rule["extra"] != "keep-me" || rule["id"] != "r1" || rule["ref"] != "myref" {
+		t.Fatalf("existing rules changed: %#v", rule)
+	}
+
+	// --rules replaces the array.
+	rulesFile := filepath.Join(t.TempDir(), "new-rules.json")
+	_ = os.WriteFile(rulesFile, []byte(`[{"action":"skip","expression":"true"}]`), 0o600)
+	api.mu.Lock()
+	api.reqs = nil
+	api.mu.Unlock()
+	res = runCLI(t, "ruleset", "update", "rs1", "--zone", zoneID, "--rules", "@"+rulesFile, "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("rules update: code=%d stderr=%q", res.code, res.stderr)
+	}
+	got = decodeRequestBody(t, api.last().Body)
+	if !reflect.DeepEqual(got["rules"], []any{map[string]any{"action": "skip", "expression": "true"}}) {
+		t.Fatalf("replaced rules = %#v", got["rules"])
+	}
+	if got["name"] != "managed waf" {
+		t.Fatalf("name must be preserved: %#v", got)
+	}
+
+	if res := runCLI(t, "ruleset", "update", "rs1", "--zone", zoneID, "--endpoint-url", ep); res.code != errors.CodeInvalid {
+		t.Fatalf("empty update: code=%d", res.code)
+	}
+}
+
+func TestRulesetDeleteGuardRails(t *testing.T) {
+	api := rulesAPI(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := []string{"ruleset", "delete", "rs1", "--zone", zoneID, "--endpoint-url", ep}
+
+	// Refusal: exit 2, no DELETE.
+	res := runCLI(t, base...)
+	if res.code != errors.CodeInvalid {
+		t.Fatalf("refusal: code=%d, want 2", res.code)
+	}
+	for _, r := range api.requests() {
+		if r.Method == "DELETE" {
+			t.Fatalf("DELETE sent without confirmation")
+		}
+	}
+
+	// --yes: real DELETE.
+	res = runCLI(t, append(append([]string{}, base...), "--yes")...)
+	if res.code != 0 {
+		t.Fatalf("delete: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Method != "DELETE" || req.Path != "/zones/"+zoneID+"/rulesets/rs1" || strings.Contains(req.Query, "dry_run") {
+		t.Fatalf("delete request = %+v", req)
+	}
+
+	// --dry-run: API-native validation with dry_run=true, preview, no confirm.
+	api.mu.Lock()
+	api.reqs = nil
+	api.mu.Unlock()
+	res = runCLI(t, append(append([]string{}, base...), "--dry-run")...)
+	if res.code != 0 {
+		t.Fatalf("dry-run: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "DELETE" || !strings.Contains(req.Query, "dry_run=true") {
+		t.Fatalf("dry-run request = %+v", req)
+	}
+	if !strings.Contains(res.stdout, "Would delete ruleset rs1") {
+		t.Fatalf("dry-run preview = %q", res.stdout)
+	}
+}
+
+func TestWAFRulesetView(t *testing.T) {
+	api := rulesAPI(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+
+	res := runCLI(t, "waf", "ruleset", "list", "--zone", zoneID, "--json", "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("list: code=%d stderr=%q", res.code, res.stderr)
+	}
+	var env struct {
+		Data []map[string]any `json:"data"`
+		Meta struct {
+			Count int `json:"count"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal([]byte(res.stdout), &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.Meta.Count != 2 {
+		t.Fatalf("waf list should exclude non-WAF phases: %s", res.stdout)
+	}
+	for _, d := range env.Data {
+		if d["id"] == "rs3" {
+			t.Fatalf("cache-settings ruleset leaked into the WAF view: %s", res.stdout)
+		}
+	}
+
+	if res := runCLI(t, "waf", "ruleset", "list", "--zone", zoneID, "--phase", "bogus", "--endpoint-url", ep); res.code != errors.CodeInvalid {
+		t.Fatalf("bad phase: code=%d", res.code)
+	}
+
+	res = runCLI(t, "waf", "ruleset", "get", "rs1", "--zone", zoneID, "--endpoint-url", ep)
+	if res.code != 0 || !strings.Contains(res.stdout, "managed waf") {
+		t.Fatalf("get: code=%d stdout=%q", res.code, res.stdout)
+	}
+
+	// A cache-phase ruleset is not a WAF ruleset.
+	res = runCLI(t, "waf", "ruleset", "get", "rs3", "--zone", zoneID, "--endpoint-url", ep)
+	if res.code != errors.CodeInvalid || !strings.Contains(res.stderr, "not a WAF phase") {
+		t.Fatalf("non-waf get: code=%d stderr=%q", res.code, res.stderr)
+	}
+
+	// Overrides update.
+	rulesFile := filepath.Join(t.TempDir(), "overrides.json")
+	overrides := `[{"id":"r1","action":"log","enabled":false}]`
+	_ = os.WriteFile(rulesFile, []byte(overrides), 0o600)
+	res = runCLI(t, "waf", "ruleset", "update", "rs1", "--zone", zoneID, "--rules", "@"+rulesFile, "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("override: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Method != "PUT" || req.Path != "/zones/"+zoneID+"/rulesets/rs1" {
+		t.Fatalf("override request = %+v", req)
+	}
+	got := decodeRequestBody(t, req.Body)
+	if !reflect.DeepEqual(got["rules"], []any{map[string]any{"id": "r1", "action": "log", "enabled": false}}) {
+		t.Fatalf("override body rules = %#v", got["rules"])
+	}
+	if got["phase"] != "http_request_firewall_managed" || got["name"] != "managed waf" {
+		t.Fatalf("override body = %#v", got)
+	}
+	if res := runCLI(t, "waf", "ruleset", "update", "rs1", "--zone", zoneID, "--endpoint-url", ep); res.code != errors.CodeInvalid {
+		t.Fatalf("missing --rules: code=%d", res.code)
+	}
+}
+
+func TestCacheRuleCRUD(t *testing.T) {
+	api := rulesAPI(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	entrypoint := "/zones/" + zoneID + "/rulesets/phases/http_request_cache_settings/entrypoint"
+
+	// list
+	res := runCLI(t, "cache", "rule", "list", "--zone", zoneID, "--json", "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("list: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if api.last().Path != entrypoint || api.last().Method != "GET" {
+		t.Fatalf("list request = %+v", api.last())
+	}
+	if !strings.Contains(res.stdout, `"id": "rule1"`) || !strings.Contains(res.stdout, "set_cache_settings") {
+		t.Fatalf("list output = %s", res.stdout)
+	}
+
+	// get (found + not found)
+	res = runCLI(t, "cache", "rule", "get", "rule1", "--zone", zoneID, "--endpoint-url", ep)
+	if res.code != 0 || !strings.Contains(res.stdout, "rule1") {
+		t.Fatalf("get: code=%d stdout=%q", res.code, res.stdout)
+	}
+	res = runCLI(t, "cache", "rule", "get", "missing", "--zone", zoneID, "--endpoint-url", ep)
+	if res.code != errors.CodeNotFound {
+		t.Fatalf("missing rule: code=%d, want 5", res.code)
+	}
+
+	// create -> PUT with existing + new rule
+	res = runCLI(t, "cache", "rule", "create", "--zone", zoneID,
+		"--action", "set_cache_settings", "--expression", `(http.host eq "x.example.com")`,
+		"--description", "x", "--action-parameters", `{"cache":false}`, "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("create: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Method != "PUT" || req.Path != entrypoint {
+		t.Fatalf("create request = %+v", req)
+	}
+	got := decodeRequestBody(t, req.Body)
+	rules := got["rules"].([]any)
+	if len(rules) != 2 {
+		t.Fatalf("create rules = %#v", rules)
+	}
+	second := rules[1].(map[string]any)
+	if second["action"] != "set_cache_settings" || second["expression"] != `(http.host eq "x.example.com")` ||
+		second["description"] != "x" || second["enabled"] != true {
+		t.Fatalf("created rule = %#v", second)
+	}
+	if !reflect.DeepEqual(second["action_parameters"], map[string]any{"cache": false}) {
+		t.Fatalf("action parameters = %#v", second["action_parameters"])
+	}
+
+	// update -> preserves id and unknown fields, applies overrides
+	res = runCLI(t, "cache", "rule", "update", "rule1", "--zone", zoneID, "--enabled=false", "--action", "set_cache_settings", "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("update: code=%d stderr=%q", res.code, res.stderr)
+	}
+	got = decodeRequestBody(t, api.last().Body)
+	first := got["rules"].([]any)[0].(map[string]any)
+	if first["id"] != "rule1" || first["enabled"] != false || first["extra"] != "keep-me" ||
+		first["expression"] != `(http.host eq "cache.example.com")` {
+		t.Fatalf("updated rule = %#v", first)
+	}
+
+	// delete: refusal (no PUT), then --yes, then --dry-run
+	base := []string{"cache", "rule", "delete", "rule1", "--zone", zoneID, "--endpoint-url", ep}
+	before := api.count()
+	res = runCLI(t, base...)
+	if res.code != errors.CodeInvalid {
+		t.Fatalf("refusal: code=%d, want 2", res.code)
+	}
+	if api.count() != before+1 { // only the entrypoint GET
+		t.Fatalf("refusal sent writes: %+v", api.requests()[before:])
+	}
+	res = runCLI(t, append(append([]string{}, base...), "--yes")...)
+	if res.code != 0 {
+		t.Fatalf("delete: code=%d stderr=%q", res.code, res.stderr)
+	}
+	got = decodeRequestBody(t, api.last().Body)
+	if len(got["rules"].([]any)) != 0 {
+		t.Fatalf("delete did not remove the rule: %#v", got)
+	}
+
+	api.mu.Lock()
+	api.reqs = nil
+	api.mu.Unlock()
+	res = runCLI(t, append(append([]string{}, base...), "--dry-run")...)
+	if res.code != 0 {
+		t.Fatalf("dry-run: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if !strings.Contains(api.last().Query, "dry_run=true") {
+		t.Fatalf("dry-run query = %q", api.last().Query)
+	}
+	if !strings.Contains(res.stdout, "Would delete cache rule") {
+		t.Fatalf("dry-run preview = %q", res.stdout)
+	}
+
+	// usage errors
+	if res := runCLI(t, "cache", "rule", "create", "--zone", zoneID, "--expression", "true", "--endpoint-url", ep); res.code != errors.CodeInvalid {
+		t.Fatalf("missing action: code=%d", res.code)
+	}
+	if res := runCLI(t, "cache", "rule", "create", "--zone", zoneID, "--action", "x", "--endpoint-url", ep); res.code != errors.CodeInvalid {
+		t.Fatalf("missing expression: code=%d", res.code)
+	}
+	if res := runCLI(t, "cache", "rule", "update", "rule1", "--zone", zoneID, "--endpoint-url", ep); res.code != errors.CodeInvalid {
+		t.Fatalf("empty update: code=%d", res.code)
+	}
+	if res := runCLI(t, "cache", "rule", "list"); res.code != errors.CodeInvalid {
+		t.Fatalf("missing zone: code=%d", res.code)
+	}
+}
+
+func TestRedirectRulePhase(t *testing.T) {
+	api := rulesAPI(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	entrypoint := "/zones/" + zoneID + "/rulesets/phases/http_request_dynamic_redirect/entrypoint"
+
+	res := runCLI(t, "redirect", "rule", "list", "--zone", zoneID, "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("list: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if api.last().Path != entrypoint {
+		t.Fatalf("list path = %q, want %q", api.last().Path, entrypoint)
+	}
+
+	res = runCLI(t, "redirect", "rule", "create", "--zone", zoneID,
+		"--action", "redirect", "--expression", `(http.request.uri.path eq "/old")`,
+		"--action-parameters", `{"from_value":{"target_url":{"value":"https://example.com/new"},"status_code":301}}`,
+		"--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("create: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Method != "PUT" || req.Path != entrypoint {
+		t.Fatalf("create request = %+v", req)
+	}
+	got := decodeRequestBody(t, req.Body)
+	rules := got["rules"].([]any)
+	if len(rules) != 2 || rules[1].(map[string]any)["action"] != "redirect" {
+		t.Fatalf("create rules = %#v", rules)
+	}
+	params := rules[1].(map[string]any)["action_parameters"].(map[string]any)
+	if _, ok := params["from_value"]; !ok {
+		t.Fatalf("action parameters lost: %#v", params)
+	}
+}

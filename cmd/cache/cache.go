@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/hnkNkm/flareadm/cmd/internal/phaserulecmd"
 	"github.com/hnkNkm/flareadm/internal/app"
 	"github.com/hnkNkm/flareadm/internal/cloudflare"
 	"github.com/hnkNkm/flareadm/internal/errors"
@@ -20,6 +21,13 @@ func New(rt *app.Runtime) *cobra.Command {
 		Short: "Cache administration",
 	}
 	cmd.AddCommand(newPurge(rt))
+	cmd.AddCommand(phaserulecmd.New(rt, phaserulecmd.Config{
+		Phase:     "http_request_cache_settings",
+		Short:     "Cache rules",
+		RuleNoun:  "cache",
+		PhasesRef: "http_request_cache_settings",
+		Example:   `flareadm cache rule create --zone example.com --action set_cache_settings --expression "(http.host eq \"www.example.com\")" --action-parameters @params.json`,
+	}))
 	return cmd
 }
 

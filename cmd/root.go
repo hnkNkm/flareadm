@@ -17,7 +17,10 @@ import (
 	"github.com/hnkNkm/flareadm/cmd/configure"
 	"github.com/hnkNkm/flareadm/cmd/dns"
 	"github.com/hnkNkm/flareadm/cmd/profile"
+	"github.com/hnkNkm/flareadm/cmd/redirect"
+	"github.com/hnkNkm/flareadm/cmd/ruleset"
 	"github.com/hnkNkm/flareadm/cmd/ssl"
+	"github.com/hnkNkm/flareadm/cmd/waf"
 	"github.com/hnkNkm/flareadm/cmd/zone"
 	"github.com/hnkNkm/flareadm/internal/app"
 	"github.com/hnkNkm/flareadm/internal/errors"
@@ -76,6 +79,9 @@ func NewCommand(rt *app.Runtime) *cobra.Command {
 	root.AddCommand(dns.New(rt))
 	root.AddCommand(ssl.New(rt))
 	root.AddCommand(certificate.New(rt))
+	root.AddCommand(ruleset.New(rt))
+	root.AddCommand(waf.New(rt))
+	root.AddCommand(redirect.New(rt))
 	root.AddCommand(cache.New(rt))
 	root.AddCommand(api.New(rt))
 	addCompletion(root, rt)
