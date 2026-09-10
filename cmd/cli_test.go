@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -52,10 +53,16 @@ func runCLI(t *testing.T, args ...string) cliResult {
 }
 
 // newHome isolates XDG_CONFIG_HOME and sets the API token.
+// newHome isolates the configuration directory in a temp directory. Both the
+// XDG variable (unix) and APPDATA (windows) are redirected because
+// config.DefaultPath prefers APPDATA on Windows; without this the CLI would
+// write into the developer's real profile and cfgPath would read a path that
+// was never written.
 func newHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
+	t.Setenv("APPDATA", home)
 	return home
 }
 
@@ -313,6 +320,62 @@ func TestUnknownCommandAndFlagExitTwo(t *testing.T) {
 	if res := runCLI(t, "zone", "list", "--frob"); res.code != errors.CodeInvalid {
 		t.Fatalf("unknown flag code=%d stderr=%q", res.code, res.stderr)
 	}
+}
+
+// TestConfigureInitCreatesMissingConfigDir points the configuration home at a
+// nested directory that does not exist yet and asserts that the write path
+// creates it. The unix directory mode is part of the contract; on Windows the
+// same check is skipped because the platform ignores POSIX modes.
+func TestConfigureInitCreatesMissingConfigDir(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "nested", "dir")
+	t.Setenv("XDG_CONFIG_HOME", nested)
+	t.Setenv("APPDATA", nested)
+	setToken(t, "tok")
+
+	target := filepath.Join(nested, "flareadm", "config.toml")
+	if _, err := os.Stat(target); err == nil {
+		t.Fatalf("%s must not exist before init", target)
+	}
+	if res := runCLI(t, "configure", "init"); res.code != 0 {
+		t.Fatalf("init: code=%d stderr=%q", res.code, res.stderr)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("init did not create %s: %v", target, err)
+	}
+	if !strings.Contains(string(data), "[profile.default]") {
+		t.Fatalf("config = %s", data)
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(filepath.Dir(target))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if perm := info.Mode().Perm(); perm != 0o700 {
+			t.Fatalf("config directory mode = %o, want 700", perm)
+		}
+		if perm := fileMode(t, target); perm != 0o600 {
+			t.Fatalf("config file mode = %o, want 600", perm)
+		}
+	}
+
+	// A nested write through another entry point (configure set) keeps working.
+	if res := runCLI(t, "configure", "set", "account_id", accountID); res.code != 0 {
+		t.Fatalf("set: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if res := runCLI(t, "configure", "get", "account_id"); res.code != 0 || !strings.Contains(res.stdout, accountID) {
+		t.Fatalf("get: code=%d stdout=%q", res.code, res.stdout)
+	}
+}
+
+func fileMode(t *testing.T, path string) os.FileMode {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.Mode().Perm()
 }
 
 func TestConfigureAndProfileLifecycle(t *testing.T) {
