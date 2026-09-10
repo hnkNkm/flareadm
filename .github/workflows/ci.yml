@@ -38,6 +38,9 @@ jobs:
       - name: Lint
         run: nix develop -c golangci-lint run
 
+      - name: Command reference is up to date
+        run: nix develop -c bash -c 'go run ./tools/docgen | diff -u docs/commands.md -'
+
       - name: Vulnerability scan
         run: nix develop -c govulncheck ./...
 
