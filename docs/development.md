@@ -158,6 +158,9 @@ cosign verify-blob \
 sha256sum --check checksums.txt
 ```
 
+`cosign` is provided by the flake dev shell; if it is not installed globally, run the
+verification as `nix develop -c cosign verify-blob …`.
+
 ### Release security
 
 Releases SHOULD include:

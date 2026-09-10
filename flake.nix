@@ -66,6 +66,7 @@
             govulncheck
             delve
             goreleaser
+            cosign
             git
             nixfmt
           ];
