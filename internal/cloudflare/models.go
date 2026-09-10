@@ -118,7 +118,35 @@ type envelope struct {
 	Errors     []envErr          `json:"errors"`
 	Messages   []json.RawMessage `json:"messages"`
 	Result     json.RawMessage   `json:"result"`
-	ResultInfo *resultInfo       `json:"result_info"`
+	ResultInfo json.RawMessage   `json:"result_info"`
+}
+
+// cursorInfo decodes cursor-pagination metadata (result_info.cursor or the
+// newer result_info.cursors.after form).
+type cursorInfo struct {
+	Count   int64  `json:"count"`
+	Cursor  string `json:"cursor"`
+	PerPage int64  `json:"per_page"`
+	Cursors struct {
+		After  string `json:"after"`
+		Before string `json:"before"`
+	} `json:"cursors"`
+}
+
+// nextCursor extracts the pagination cursor from raw result_info, accepting
+// both cursor shapes.
+func nextCursor(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var info cursorInfo
+	if err := json.Unmarshal(raw, &info); err != nil {
+		return ""
+	}
+	if info.Cursor != "" {
+		return info.Cursor
+	}
+	return info.Cursors.After
 }
 
 // resultInfo mirrors result_info for v4 page pagination.
@@ -183,4 +211,42 @@ type Certificate struct {
 	UploadedOn         string   `json:"uploaded_on,omitempty" yaml:"uploaded_on,omitempty"`
 	ModifiedOn         string   `json:"modified_on,omitempty" yaml:"modified_on,omitempty"`
 	PolicyRestrictions string   `json:"policy_restrictions,omitempty" yaml:"policy_restrictions,omitempty"`
+}
+
+// ---- v0.3: R2, KV and legacy page rules ----------------------------------
+
+// R2Bucket is the normalized R2 bucket model.
+type R2Bucket struct {
+	Name         string `json:"name" yaml:"name"`
+	Location     string `json:"location,omitempty" yaml:"location,omitempty"`
+	StorageClass string `json:"storage_class,omitempty" yaml:"storage_class,omitempty"`
+	Jurisdiction string `json:"jurisdiction,omitempty" yaml:"jurisdiction,omitempty"`
+	CreationDate string `json:"creation_date,omitempty" yaml:"creation_date,omitempty"`
+}
+
+// KVNamespace is the normalized Workers KV namespace model.
+type KVNamespace struct {
+	ID                  string `json:"id" yaml:"id"`
+	Title               string `json:"title" yaml:"title"`
+	Jurisdiction        string `json:"jurisdiction,omitempty" yaml:"jurisdiction,omitempty"`
+	SupportsURLEncoding bool   `json:"supports_url_encoding,omitempty" yaml:"supports_url_encoding,omitempty"`
+}
+
+// KVKey is the normalized KV key metadata (values are never included).
+type KVKey struct {
+	Name       string          `json:"name" yaml:"name"`
+	Expiration float64         `json:"expiration,omitempty" yaml:"expiration,omitempty"`
+	Metadata   json.RawMessage `json:"metadata,omitempty" yaml:"metadata,omitempty"`
+}
+
+// PageRule is the normalized legacy page rule model. Targets and Actions
+// are kept as raw JSON so unknown target/action shapes survive round trips.
+type PageRule struct {
+	ID         string          `json:"id" yaml:"id"`
+	Status     string          `json:"status" yaml:"status"`
+	Priority   int64           `json:"priority" yaml:"priority"`
+	Targets    json.RawMessage `json:"targets" yaml:"targets"`
+	Actions    json.RawMessage `json:"actions" yaml:"actions"`
+	CreatedOn  string          `json:"created_on,omitempty" yaml:"created_on,omitempty"`
+	ModifiedOn string          `json:"modified_on,omitempty" yaml:"modified_on,omitempty"`
 }

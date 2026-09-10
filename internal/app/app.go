@@ -310,6 +310,26 @@ func (rt *Runtime) ResolveZone(ctx context.Context) (*cloudflare.Client, string,
 	return client, zoneID, nil
 }
 
+// ResolveAccount resolves the account id for account-scoped commands
+// (flag > profile account_id > FLAREADM_ACCOUNT_ID > single-account
+// discovery) and returns the client plus the account id and name.
+func (rt *Runtime) ResolveAccount(ctx context.Context) (*cloudflare.Client, resolver.AccountRef, error) {
+	client, err := rt.CloudClient()
+	if err != nil {
+		return nil, resolver.AccountRef{}, err
+	}
+	prof, err := rt.ActiveProfilePtr()
+	if err != nil {
+		return nil, resolver.AccountRef{}, err
+	}
+	ref, err := resolver.Account(ctx, client, rt.AccountIDFlag, prof, rt.Getenv)
+	if err != nil {
+		return nil, resolver.AccountRef{}, err
+	}
+	rt.Logger().Infof("resolved account %s (%s)", ref.ID, ref.Source)
+	return client, ref, nil
+}
+
 // Confirm asks for destructive-operation consent.
 func (rt *Runtime) Confirm(question string) error {
 	p := &confirm.Prompter{

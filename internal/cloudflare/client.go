@@ -109,6 +109,12 @@ func debugMiddleware(l *logging.Logger) retry.Middleware {
 // response body. API failures (HTTP >= 400) surface as FlareADM ExitErrors
 // with mapped exit codes.
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, body []byte, contentType string) ([]byte, error) {
+	return c.doWithHeaders(ctx, method, path, query, body, contentType, nil)
+}
+
+// doWithHeaders is do plus extra request headers (used for the R2
+// cf-r2-jurisdiction header).
+func (c *Client) doWithHeaders(ctx context.Context, method, path string, query url.Values, body []byte, contentType string, headers map[string]string) ([]byte, error) {
 	if !strings.HasPrefix(path, "/") {
 		return nil, errors.Usage("API path %q must start with '/'", path)
 	}
@@ -118,6 +124,11 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	}
 
 	var opts []option.RequestOption
+	for k, v := range headers {
+		if v != "" {
+			opts = append(opts, option.WithHeader(k, v))
+		}
+	}
 	dst := new([]byte)
 	if body != nil {
 		ct := contentType
@@ -137,7 +148,12 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 // envelope ({success,errors,messages,result[,_result_info]}). It returns the
 // envelope plus the raw body bytes (used by --raw mode).
 func (c *Client) requestJSON(ctx context.Context, method, path string, query url.Values, body []byte, contentType string) (envelope, []byte, error) {
-	raw, err := c.do(ctx, method, path, query, body, contentType)
+	return c.requestJSONHeaders(ctx, method, path, query, body, contentType, nil)
+}
+
+// requestJSONHeaders is requestJSON plus extra request headers.
+func (c *Client) requestJSONHeaders(ctx context.Context, method, path string, query url.Values, body []byte, contentType string, headers map[string]string) (envelope, []byte, error) {
+	raw, err := c.doWithHeaders(ctx, method, path, query, body, contentType, headers)
 	if err != nil {
 		return envelope{}, nil, err
 	}
@@ -309,13 +325,17 @@ func (c *Client) rawListBody(pageBodies [][]byte, itemCount int, pol pagination.
 	if pol.MaxItems > 0 && len(out.Result) > itemCount {
 		out.Result = out.Result[:itemCount]
 	}
-	out.ResultInfo = &resultInfo{
+	info, err := json.Marshal(resultInfo{
 		Page:       1,
 		PerPage:    int64(pageSize(pol)),
 		Count:      int64(len(out.Result)),
 		TotalCount: int64(len(out.Result)),
 		TotalPages: 1,
+	})
+	if err != nil {
+		return nil, err
 	}
+	out.ResultInfo = info
 	return json.MarshalIndent(out, "", "  ")
 }
 
@@ -342,5 +362,5 @@ type rawListEnvelope struct {
 	Errors     []json.RawMessage `json:"errors"`
 	Messages   []json.RawMessage `json:"messages"`
 	Result     []json.RawMessage `json:"result"`
-	ResultInfo *resultInfo       `json:"result_info"`
+	ResultInfo json.RawMessage   `json:"result_info"`
 }

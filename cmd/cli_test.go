@@ -2489,3 +2489,552 @@ func TestRedirectRulePhase(t *testing.T) {
 		t.Fatalf("action parameters lost: %#v", params)
 	}
 }
+
+// ---- v0.3 slice 1: r2 / kv / page-rule ------------------------------------
+
+func r2BucketJSON(name string) map[string]any {
+	return map[string]any{
+		"name": name, "location": "WEUR", "storage_class": "Standard",
+		"jurisdiction": "default", "creation_date": "2025-01-01T00:00:00Z",
+	}
+}
+
+func namespaceJSON(id, title string) map[string]any {
+	return map[string]any{"id": id, "title": title, "supports_url_encoding": true}
+}
+
+func pageRuleJSON(id string) map[string]any {
+	return map[string]any{
+		"id": id, "status": "active", "priority": 1,
+		"targets":    []any{map[string]any{"target": "url", "constraint": map[string]any{"operator": "matches", "value": "example.com/*"}}},
+		"actions":    []any{map[string]any{"id": "always_use_https"}},
+		"created_on": "2025-01-01T00:00:00Z", "modified_on": "2025-01-01T00:00:00Z",
+	}
+}
+
+// v03API serves R2, KV and page rule endpoints.
+func v03API(t *testing.T) *apiStub {
+	return newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		switch {
+		// R2 buckets (cursor pagination).
+		case method == "GET" && path == "/accounts/"+accountID+"/r2/buckets":
+			if strings.Contains(r.Query, "cursor=c2") {
+				return 200, envelopeWithInfo(map[string]any{"buckets": []any{r2BucketJSON("b3")}},
+					map[string]any{"count": 1, "per_page": 100, "cursor": ""})
+			}
+			return 200, envelopeWithInfo(map[string]any{"buckets": []any{r2BucketJSON("b1"), r2BucketJSON("b2")}},
+				map[string]any{"count": 2, "per_page": 100, "cursor": "c2"})
+		case method == "POST" && path == "/accounts/"+accountID+"/r2/buckets":
+			return 200, envelope(r2BucketJSON("bnew"))
+		case (method == "GET" || method == "DELETE") && path == "/accounts/"+accountID+"/r2/buckets/b1":
+			if method == "DELETE" {
+				return 200, envelope(map[string]any{"name": "b1"})
+			}
+			return 200, envelope(r2BucketJSON("b1"))
+		// KV namespaces (page pagination).
+		case method == "GET" && path == "/accounts/"+accountID+"/storage/kv/namespaces":
+			if strings.Contains(r.Query, "page=2") {
+				return 200, envelope([]any{})
+			}
+			return 200, envelope([]any{namespaceJSON("ns1", "my namespace")})
+		case method == "POST" && path == "/accounts/"+accountID+"/storage/kv/namespaces":
+			return 200, envelope(namespaceJSON("nsnew", "created"))
+		case (method == "GET" || method == "DELETE") && path == "/accounts/"+accountID+"/storage/kv/namespaces/ns1":
+			if method == "DELETE" {
+				return 200, envelope(nil)
+			}
+			return 200, envelope(namespaceJSON("ns1", "my namespace"))
+		// KV keys (cursor pagination).
+		case method == "GET" && path == "/accounts/"+accountID+"/storage/kv/namespaces/ns1/keys":
+			if strings.Contains(r.Query, "cursor=kc2") {
+				return 200, envelopeWithInfo([]any{map[string]any{"name": "k3"}}, map[string]any{"cursor": ""})
+			}
+			return 200, envelopeWithInfo([]any{
+				map[string]any{"name": "k1", "metadata": map[string]any{"a": 1}},
+				map[string]any{"name": "k2", "expiration": float64(1893456000)},
+			}, map[string]any{"cursor": "kc2"})
+		// KV value.
+		case method == "GET" && path == "/accounts/"+accountID+"/storage/kv/namespaces/ns1/values/k1":
+			return 200, "hello world"
+		case method == "PUT" && path == "/accounts/"+accountID+"/storage/kv/namespaces/ns1/values/k1":
+			return 200, `{"success":true,"errors":[],"messages":[],"result":null}`
+		case method == "DELETE" && path == "/accounts/"+accountID+"/storage/kv/namespaces/ns1/values/k1":
+			return 200, `{"success":true,"errors":[],"messages":[],"result":null}`
+		// Page rules.
+		case method == "GET" && path == "/zones/"+zoneID+"/pagerules":
+			return 200, envelope([]any{pageRuleJSON("pr1")})
+		case method == "POST" && path == "/zones/"+zoneID+"/pagerules":
+			return 200, envelope(pageRuleJSON("prnew"))
+		case (method == "GET" || method == "PATCH" || method == "DELETE") && path == "/zones/"+zoneID+"/pagerules/pr1":
+			switch method {
+			case "DELETE":
+				return 200, envelope(map[string]any{"id": "pr1"})
+			default:
+				return 200, envelope(pageRuleJSON("pr1"))
+			}
+		}
+		s, b := apiErr(404, 7000, "not found")
+		return s, b
+	})
+}
+
+func TestR2BucketCRUD(t *testing.T) {
+	api := v03API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(args ...string) []string {
+		return append(args, "--account-id", accountID, "--endpoint-url", ep)
+	}
+
+	// list: cursor pagination, filters, json output
+	res := runCLI(t, base("r2", "bucket", "list", "--name-contains", "asset", "--order", "name", "--json")...)
+	if res.code != 0 {
+		t.Fatalf("list: code=%d stderr=%q", res.code, res.stderr)
+	}
+	reqs := api.requests()
+	if len(reqs) != 2 {
+		t.Fatalf("requests = %d, want 2 cursor pages", len(reqs))
+	}
+	if !strings.Contains(reqs[0].Query, "name_contains=asset") || !strings.Contains(reqs[0].Query, "order=name") ||
+		!strings.Contains(reqs[0].Query, "per_page=100") {
+		t.Fatalf("query = %q", reqs[0].Query)
+	}
+	if !strings.Contains(reqs[1].Query, "cursor=c2") {
+		t.Fatalf("page 2 query = %q", reqs[1].Query)
+	}
+	var env struct {
+		Data []map[string]any `json:"data"`
+		Meta struct {
+			Count int `json:"count"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal([]byte(res.stdout), &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.Meta.Count != 3 || env.Data[0]["name"] != "b1" || env.Data[2]["name"] != "b3" {
+		t.Fatalf("list data = %+v", env.Data)
+	}
+
+	// jurisdiction header + no-paginate + max-items
+	api.mu.Lock()
+	api.reqs = nil
+	api.mu.Unlock()
+	res = runCLI(t, base("r2", "bucket", "list", "--jurisdiction", "eu", "--no-paginate")...)
+	if res.code != 0 {
+		t.Fatalf("jurisdiction: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if len(api.requests()) != 1 {
+		t.Fatalf("no-paginate requests = %d", len(api.requests()))
+	}
+	api.mu.Lock()
+	api.reqs = nil
+	api.mu.Unlock()
+	res = runCLI(t, base("r2", "bucket", "list", "--max-items", "2", "--json")...)
+	if res.code != 0 {
+		t.Fatalf("max-items: code=%d", res.code)
+	}
+	if len(api.requests()) != 1 {
+		t.Fatalf("max-items fetched %d pages", len(api.requests()))
+	}
+	if err := json.Unmarshal([]byte(res.stdout), &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.Meta.Count != 2 {
+		t.Fatalf("max-items count = %d", env.Meta.Count)
+	}
+
+	// get
+	res = runCLI(t, base("r2", "bucket", "get", "b1", "--json")...)
+	if res.code != 0 || !strings.Contains(res.stdout, `"name": "b1"`) {
+		t.Fatalf("get: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if api.last().Path != "/accounts/"+accountID+"/r2/buckets/b1" {
+		t.Fatalf("get path = %q", api.last().Path)
+	}
+
+	// create: exact body
+	res = runCLI(t, base("r2", "bucket", "create", "--name", "assets", "--location-hint", "weur", "--storage-class", "Standard")...)
+	if res.code != 0 {
+		t.Fatalf("create: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Method != "POST" {
+		t.Fatalf("create request = %+v", req)
+	}
+	want := map[string]any{"name": "assets", "locationHint": "weur", "storageClass": "Standard"}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, want) {
+		t.Fatalf("create body mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+
+	// create dry-run: preview, no POST
+	before := api.count()
+	res = runCLI(t, base("r2", "bucket", "create", "--name", "assets", "--dry-run")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "Would create R2 bucket assets") {
+		t.Fatalf("dry-run: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if api.count() != before {
+		t.Fatalf("dry-run sent a request")
+	}
+
+	// validation
+	for _, args := range [][]string{
+		base("r2", "bucket", "create"),
+		base("r2", "bucket", "create", "--name", "x", "--location-hint", "mars"),
+		base("r2", "bucket", "create", "--name", "x", "--storage-class", "Glacier"),
+		base("r2", "bucket", "list", "--jurisdiction", "moon"),
+	} {
+		if res := runCLI(t, args...); res.code != errors.CodeInvalid {
+			t.Fatalf("%v: code=%d, want 2", args, res.code)
+		}
+	}
+
+	// delete guard rails
+	delBase := base("r2", "bucket", "delete", "b1")
+	res = runCLI(t, delBase...)
+	if res.code != errors.CodeInvalid {
+		t.Fatalf("refusal: code=%d", res.code)
+	}
+	for _, r := range api.requests() {
+		if r.Method == "DELETE" {
+			t.Fatalf("DELETE without confirmation")
+		}
+	}
+	res = runCLI(t, append(append([]string{}, delBase...), "--dry-run")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "Would delete R2 bucket b1") {
+		t.Fatalf("dry-run delete: code=%d stdout=%q", res.code, res.stdout)
+	}
+	res = runCLI(t, append(append([]string{}, delBase...), "--yes")...)
+	if res.code != 0 {
+		t.Fatalf("delete: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if req := api.last(); req.Method != "DELETE" || req.Path != "/accounts/"+accountID+"/r2/buckets/b1" {
+		t.Fatalf("delete request = %+v", req)
+	}
+
+	// error mapping
+	api404 := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		s, b := apiErr(404, 7000, "bucket not found")
+		return s, b
+	})
+	if res := runCLI(t, "r2", "bucket", "get", "missing", "--account-id", accountID, "--endpoint-url", api404.srv.URL); res.code != errors.CodeNotFound {
+		t.Fatalf("404: code=%d, want 5", res.code)
+	}
+	api403 := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		s, b := apiErr(403, 9109, "forbidden")
+		return s, b
+	})
+	if res := runCLI(t, "r2", "bucket", "list", "--account-id", accountID, "--endpoint-url", api403.srv.URL); res.code != errors.CodePermission {
+		t.Fatalf("403: code=%d, want 4", res.code)
+	}
+}
+
+func TestR2AccountResolutionReused(t *testing.T) {
+	// Discovery: a single accessible account is used automatically.
+	api := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		switch {
+		case method == "GET" && path == "/accounts":
+			if strings.Contains(r.Query, "page=2") {
+				return 200, envelope([]any{})
+			}
+			return 200, envelope([]any{map[string]any{"id": accountID, "name": "only"}})
+		case method == "GET" && path == "/accounts/"+accountID+"/r2/buckets":
+			return 200, envelopeWithInfo(map[string]any{"buckets": []any{}}, map[string]any{"cursor": ""})
+		}
+		s, b := apiErr(404, 0, "nope")
+		return s, b
+	})
+	setToken(t, "tok")
+	newHome(t)
+	res := runCLI(t, "r2", "bucket", "list", "--endpoint-url", api.srv.URL)
+	if res.code != 0 {
+		t.Fatalf("discovery: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if api.requests()[0].Path != "/accounts" {
+		t.Fatalf("expected account discovery first: %+v", api.requests())
+	}
+
+	// Ambiguous accounts -> exit 2 with the account list.
+	api2 := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		if method == "GET" && path == "/accounts" {
+			return 200, envelope([]any{
+				map[string]any{"id": accountID, "name": "one"},
+				map[string]any{"id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "name": "two"},
+			})
+		}
+		s, b := apiErr(404, 0, "nope")
+		return s, b
+	})
+	res = runCLI(t, "r2", "bucket", "list", "--endpoint-url", api2.srv.URL)
+	if res.code != errors.CodeInvalid {
+		t.Fatalf("ambiguous: code=%d, want 2 (stderr=%q)", res.code, res.stderr)
+	}
+	if !strings.Contains(res.stderr, "one ("+accountID+")") {
+		t.Fatalf("ambiguous message = %q", res.stderr)
+	}
+}
+
+func TestKVNamespaceCRUD(t *testing.T) {
+	api := v03API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(args ...string) []string {
+		return append(args, "--account-id", accountID, "--endpoint-url", ep)
+	}
+
+	res := runCLI(t, base("kv", "namespace", "list", "--json")...)
+	if res.code != 0 {
+		t.Fatalf("list: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if api.count() != 2 {
+		t.Fatalf("list requests = %d, want 2 (page 1 + empty page 2)", api.count())
+	}
+	if !strings.Contains(res.stdout, `"id": "ns1"`) || !strings.Contains(res.stdout, "my namespace") {
+		t.Fatalf("list output = %s", res.stdout)
+	}
+
+	res = runCLI(t, base("kv", "namespace", "get", "ns1")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "ns1") {
+		t.Fatalf("get: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if api.last().Path != "/accounts/"+accountID+"/storage/kv/namespaces/ns1" {
+		t.Fatalf("get path = %q", api.last().Path)
+	}
+
+	res = runCLI(t, base("kv", "namespace", "create", "--title", "created", "--jurisdiction", "eu")...)
+	if res.code != 0 {
+		t.Fatalf("create: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Method != "POST" || req.Path != "/accounts/"+accountID+"/storage/kv/namespaces" {
+		t.Fatalf("create request = %+v", req)
+	}
+	want := map[string]any{"title": "created", "jurisdiction": "eu"}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, want) {
+		t.Fatalf("create body mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+	if res := runCLI(t, base("kv", "namespace", "create")...); res.code != errors.CodeInvalid {
+		t.Fatalf("missing title: code=%d", res.code)
+	}
+
+	del := base("kv", "namespace", "delete", "ns1")
+	if res := runCLI(t, del...); res.code != errors.CodeInvalid {
+		t.Fatalf("refusal: code=%d", res.code)
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--dry-run")...); res.code != 0 || !strings.Contains(res.stdout, "Would delete KV namespace") {
+		t.Fatalf("dry-run: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--yes")...); res.code != 0 {
+		t.Fatalf("delete: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if req := api.last(); req.Method != "DELETE" || req.Path != "/accounts/"+accountID+"/storage/kv/namespaces/ns1" {
+		t.Fatalf("delete request = %+v", req)
+	}
+}
+
+func TestKVKeyCommands(t *testing.T) {
+	api := v03API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	ns := []string{"--namespace", "ns1", "--account-id", accountID, "--endpoint-url", ep}
+
+	// list: cursor pagination + prefix + normalized json
+	res := runCLI(t, append([]string{"kv", "key", "list", "--prefix", "k"}, append(ns, "--json")...)...)
+	if res.code != 0 {
+		t.Fatalf("list: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if api.count() != 2 {
+		t.Fatalf("list requests = %d, want 2 cursor pages", api.count())
+	}
+	if !strings.Contains(api.requests()[0].Query, "prefix=k") || !strings.Contains(api.requests()[1].Query, "cursor=kc2") {
+		t.Fatalf("queries = %q / %q", api.requests()[0].Query, api.requests()[1].Query)
+	}
+	if !strings.Contains(res.stdout, `"name": "k1"`) || !strings.Contains(res.stdout, `"name": "k3"`) {
+		t.Fatalf("list output = %s", res.stdout)
+	}
+
+	// get: verbatim value, no added newline
+	res = runCLI(t, append([]string{"kv", "key", "get", "k1"}, ns...)...)
+	if res.code != 0 {
+		t.Fatalf("get: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if res.stdout != "hello world" {
+		t.Fatalf("get stdout = %q", res.stdout)
+	}
+	// get with --json wraps the value in the envelope
+	res = runCLI(t, append([]string{"kv", "key", "get", "k1"}, append(ns, "--json")...)...)
+	if res.code != 0 || !strings.Contains(res.stdout, `"value": "hello world"`) {
+		t.Fatalf("get json: code=%d stdout=%q", res.code, res.stdout)
+	}
+
+	// put from @file with metadata + TTL, and no value leakage in debug
+	valueFile := filepath.Join(t.TempDir(), "value.json")
+	_ = os.WriteFile(valueFile, []byte(`{"secret":"s3cr3t-value"}`), 0o600)
+	res = runCLI(t, append([]string{"kv", "key", "put", "k1", "--value", "@" + valueFile,
+		"--metadata", `{"a":1}`, "--expiration-ttl", "3600", "--debug"}, ns...)...)
+	if res.code != 0 {
+		t.Fatalf("put: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Method != "PUT" || req.Path != "/accounts/"+accountID+"/storage/kv/namespaces/ns1/values/k1" {
+		t.Fatalf("put request = %+v", req)
+	}
+	if !strings.Contains(req.Query, "expiration_ttl=3600") {
+		t.Fatalf("put query = %q", req.Query)
+	}
+	if !strings.Contains(req.Body, "s3cr3t-value") || !strings.Contains(req.Body, "metadata") {
+		t.Fatalf("put body = %q", req.Body)
+	}
+	if strings.Contains(res.stdout, "s3cr3t-value") || strings.Contains(res.stderr, "s3cr3t-value") {
+		t.Fatalf("value leaked: stdout=%q stderr=%q", res.stdout, res.stderr)
+	}
+
+	// validation: value required, metadata must be an object, both expirations
+	if res := runCLI(t, append([]string{"kv", "key", "put", "k1"}, ns...)...); res.code != errors.CodeInvalid {
+		t.Fatalf("missing value: code=%d", res.code)
+	}
+	if res := runCLI(t, append([]string{"kv", "key", "put", "k1", "--value", "x", "--metadata", "[1]"}, ns...)...); res.code != errors.CodeInvalid {
+		t.Fatalf("bad metadata: code=%d", res.code)
+	}
+	if res := runCLI(t, append([]string{"kv", "key", "put", "k1", "--value", "x", "--expiration", "1", "--expiration-ttl", "2"}, ns...)...); res.code != errors.CodeInvalid {
+		t.Fatalf("expiration conflict: code=%d", res.code)
+	}
+
+	// delete: unknown key -> 5, refusal -> 2, dry-run, then --yes
+	res = runCLI(t, append([]string{"kv", "key", "delete", "missing"}, ns...)...)
+	if res.code != errors.CodeNotFound {
+		t.Fatalf("missing key: code=%d, want 5", res.code)
+	}
+	del := append([]string{"kv", "key", "delete", "k1"}, ns...)
+	if res := runCLI(t, del...); res.code != errors.CodeInvalid {
+		t.Fatalf("refusal: code=%d", res.code)
+	}
+	for _, r := range api.requests() {
+		if r.Method == "DELETE" {
+			t.Fatalf("DELETE without confirmation")
+		}
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--dry-run")...); res.code != 0 || !strings.Contains(res.stdout, "Would delete key k1") {
+		t.Fatalf("dry-run: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--yes")...); res.code != 0 {
+		t.Fatalf("delete: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if req := api.last(); req.Method != "DELETE" || req.Path != "/accounts/"+accountID+"/storage/kv/namespaces/ns1/values/k1" {
+		t.Fatalf("delete request = %+v", req)
+	}
+}
+
+func TestPageRuleCRUD(t *testing.T) {
+	api := v03API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := func(args ...string) []string {
+		return append(args, "--zone", zoneID, "--endpoint-url", ep)
+	}
+	targets := `[{"target":"url","constraint":{"operator":"matches","value":"example.com/*"}}]`
+	actions := `[{"id":"always_use_https"}]`
+
+	// list with filters
+	res := runCLI(t, base("page-rule", "list", "--status", "active", "--direction", "desc", "--match", "all", "--json")...)
+	if res.code != 0 {
+		t.Fatalf("list: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Path != "/zones/"+zoneID+"/pagerules" {
+		t.Fatalf("list path = %q", req.Path)
+	}
+	for _, want := range []string{"status=active", "direction=desc", "match=all"} {
+		if !strings.Contains(req.Query, want) {
+			t.Fatalf("list query %q missing %q", req.Query, want)
+		}
+	}
+	if !strings.Contains(res.stdout, `"priority": 1`) || !strings.Contains(res.stdout, "always_use_https") {
+		t.Fatalf("list output = %s", res.stdout)
+	}
+
+	// get
+	res = runCLI(t, base("page-rule", "get", "pr1")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "pr1") || !strings.Contains(res.stdout, "example.com/*") {
+		t.Fatalf("get: code=%d stdout=%q", res.code, res.stdout)
+	}
+
+	// create: exact body
+	res = runCLI(t, base("page-rule", "create", "--targets", targets, "--actions", actions, "--priority", "5", "--status", "active")...)
+	if res.code != 0 {
+		t.Fatalf("create: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "POST" || req.Path != "/zones/"+zoneID+"/pagerules" {
+		t.Fatalf("create request = %+v", req)
+	}
+	want := map[string]any{
+		"targets":  []any{map[string]any{"target": "url", "constraint": map[string]any{"operator": "matches", "value": "example.com/*"}}},
+		"actions":  []any{map[string]any{"id": "always_use_https"}},
+		"priority": float64(5),
+		"status":   "active",
+	}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, want) {
+		t.Fatalf("create body mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+
+	// update: PATCH carries only the provided fields
+	res = runCLI(t, base("page-rule", "update", "pr1", "--priority", "2")...)
+	if res.code != 0 {
+		t.Fatalf("update: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req = api.last()
+	if req.Method != "PATCH" {
+		t.Fatalf("update request = %+v", req)
+	}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, map[string]any{"priority": float64(2)}) {
+		t.Fatalf("update body = %#v", got)
+	}
+
+	// validation
+	for _, args := range [][]string{
+		base("page-rule", "create", "--actions", actions),
+		base("page-rule", "create", "--targets", targets),
+		base("page-rule", "create", "--targets", targets, "--actions", actions, "--status", "paused"),
+		base("page-rule", "create", "--targets", targets, "--actions", actions, "--priority", "0"),
+		base("page-rule", "update", "pr1"),
+		base("page-rule", "list", "--match", "some"),
+		{"page-rule", "list"},
+	} {
+		if res := runCLI(t, args...); res.code != errors.CodeInvalid {
+			t.Fatalf("%v: code=%d, want 2 (stderr=%q)", args, res.code, res.stderr)
+		}
+	}
+
+	// delete guard rails
+	del := base("page-rule", "delete", "pr1")
+	if res := runCLI(t, del...); res.code != errors.CodeInvalid {
+		t.Fatalf("refusal: code=%d", res.code)
+	}
+	for _, r := range api.requests() {
+		if r.Method == "DELETE" {
+			t.Fatalf("DELETE without confirmation")
+		}
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--dry-run")...); res.code != 0 || !strings.Contains(res.stdout, "Would delete page rule pr1") {
+		t.Fatalf("dry-run: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if res := runCLI(t, append(append([]string{}, del...), "--yes")...); res.code != 0 {
+		t.Fatalf("delete: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if req := api.last(); req.Method != "DELETE" || req.Path != "/zones/"+zoneID+"/pagerules/pr1" {
+		t.Fatalf("delete request = %+v", req)
+	}
+
+	// 404 mapping
+	api404 := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		s, b := apiErr(404, 7000, "page rule not found")
+		return s, b
+	})
+	if res := runCLI(t, "page-rule", "get", "pr1", "--zone", zoneID, "--endpoint-url", api404.srv.URL); res.code != errors.CodeNotFound {
+		t.Fatalf("404: code=%d, want 5", res.code)
+	}
+}
