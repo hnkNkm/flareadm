@@ -99,6 +99,13 @@ flareadm
     └── request
 ```
 
+### Structured DNS record types
+
+`dns record create` and `dns record update` accept structured types (CAA, CERT, DNSKEY, DS,
+HTTPS, LOC, NAPTR, SMIMEA, SRV, SSHFP, SVCB, TLSA, URI) through the Cloudflare `data`-field
+flags. The authoritative per-type flag list is `flareadm dns record create --help` and
+`flareadm dns record update --help`.
+
 `api request` is an escape hatch for endpoints not yet modeled as first-class commands:
 
 ```bash
