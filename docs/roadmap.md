@@ -203,15 +203,14 @@ Deferred in v0.6:
 
 ### v1.0
 
-v1.0 should be declared only after:
+Declared and released as **v1.0.0** (2026-09-11). Every prerequisite is met: command naming
+rules and the configuration format are stable, normalized JSON is versioned, the surface
+covers 320 commands across v0.1–v0.6, the release/update process is established and verified
+(checksums, SBOMs and cosign keyless signatures), Windows/macOS/Linux behavior is validated by
+the platform matrix, and complete command discovery ships as `docs/commands.md` with a CI
+drift check.
 
-- command naming rules are stable;
-- configuration format is stable;
-- normalized JSON is versioned;
-- major administration surfaces have broad coverage;
-- release/update process is established;
-- Windows/macOS/Linux behavior is validated;
-- documentation contains complete command discovery.
+The compatibility policy below is now in effect for post-1.0 releases.
 
 ## Compatibility policy
 
