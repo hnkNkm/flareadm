@@ -13,9 +13,11 @@ import (
 	"github.com/hnkNkm/flareadm/cmd/api"
 	"github.com/hnkNkm/flareadm/cmd/auth"
 	"github.com/hnkNkm/flareadm/cmd/cache"
+	"github.com/hnkNkm/flareadm/cmd/certificate"
 	"github.com/hnkNkm/flareadm/cmd/configure"
 	"github.com/hnkNkm/flareadm/cmd/dns"
 	"github.com/hnkNkm/flareadm/cmd/profile"
+	"github.com/hnkNkm/flareadm/cmd/ssl"
 	"github.com/hnkNkm/flareadm/cmd/zone"
 	"github.com/hnkNkm/flareadm/internal/app"
 	"github.com/hnkNkm/flareadm/internal/errors"
@@ -72,6 +74,8 @@ func NewCommand(rt *app.Runtime) *cobra.Command {
 	root.AddCommand(account.New(rt))
 	root.AddCommand(zone.New(rt))
 	root.AddCommand(dns.New(rt))
+	root.AddCommand(ssl.New(rt))
+	root.AddCommand(certificate.New(rt))
 	root.AddCommand(cache.New(rt))
 	root.AddCommand(api.New(rt))
 	addCompletion(root, rt)
@@ -94,20 +98,20 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 	}
 	var exit *errors.ExitError
 	if stderrors.As(err, &exit) {
-		printError(errOut, err)
+		printError(errOut, rt.Redact(err.Error()))
 		return exit.Code
 	}
 	// Cobra leaves plain errors for unknown subcommands/flags.
 	if strings.HasPrefix(err.Error(), "unknown command") {
-		printError(errOut, err)
+		printError(errOut, rt.Redact(err.Error()))
 		return errors.CodeInvalid
 	}
-	printError(errOut, err)
+	printError(errOut, rt.Redact(err.Error()))
 	return errors.CodeUnclassified
 }
 
-func printError(w io.Writer, err error) {
+func printError(w io.Writer, msg string) {
 	_, _ = io.WriteString(w, "Error: ")
-	_, _ = io.WriteString(w, err.Error())
+	_, _ = io.WriteString(w, msg)
 	_, _ = io.WriteString(w, "\n")
 }

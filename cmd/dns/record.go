@@ -1,7 +1,6 @@
 package dns
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"strconv"
@@ -13,7 +12,6 @@ import (
 	"github.com/hnkNkm/flareadm/internal/cloudflare"
 	"github.com/hnkNkm/flareadm/internal/errors"
 	"github.com/hnkNkm/flareadm/internal/output"
-	"github.com/hnkNkm/flareadm/internal/resolver"
 )
 
 // recordTypes is the full set of Cloudflare DNS record types accepted on
@@ -73,27 +71,6 @@ func newRecordGroup(rt *app.Runtime) *cobra.Command {
 		newRecordExport(rt),
 	)
 	return cmd
-}
-
-// resolveZone resolves the zone reference (--zone or profile default_zone)
-// and returns the client plus zone id.
-func resolveZone(ctx context.Context, rt *app.Runtime) (*cloudflare.Client, string, error) {
-	ref, err := rt.ZoneReference("")
-	if err != nil {
-		return nil, "", err
-	}
-	client, err := rt.CloudClient()
-	if err != nil {
-		return nil, "", err
-	}
-	zoneID, err := resolver.NewZone(client).Resolve(ctx, ref)
-	if err != nil {
-		return nil, "", err
-	}
-	if zoneID != ref {
-		rt.Logger().Infof("resolved zone %q to %s", ref, zoneID)
-	}
-	return client, zoneID, nil
 }
 
 // recordFlags are the shared record mutation flags.
@@ -258,7 +235,7 @@ func newRecordList(rt *app.Runtime) *cobra.Command {
 			if typeFlag != "" && !contains(recordTypes, strings.ToUpper(typeFlag)) {
 				return errors.Usage("invalid record type %q", typeFlag)
 			}
-			client, zoneID, err := resolveZone(cmd.Context(), rt)
+			client, zoneID, err := rt.ResolveZone(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -283,7 +260,7 @@ func newRecordGet(rt *app.Runtime) *cobra.Command {
 		Short: "Show one DNS record",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			client, zoneID, err := resolveZone(cmd.Context(), rt)
+			client, zoneID, err := rt.ResolveZone(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -315,7 +292,7 @@ func newRecordCreate(rt *app.Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			client, zoneID, err := resolveZone(cmd.Context(), rt)
+			client, zoneID, err := rt.ResolveZone(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -355,7 +332,7 @@ func newRecordUpdate(rt *app.Runtime) *cobra.Command {
 			if !changed {
 				return errors.Usage("nothing to update; pass at least one record flag (see 'dns record update --help')")
 			}
-			client, zoneID, err := resolveZone(cmd.Context(), rt)
+			client, zoneID, err := rt.ResolveZone(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -391,7 +368,7 @@ func newRecordDelete(rt *app.Runtime) *cobra.Command {
 			"--yes is given; --dry-run previews the deletion without confirming.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			client, zoneID, err := resolveZone(cmd.Context(), rt)
+			client, zoneID, err := rt.ResolveZone(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -443,7 +420,7 @@ func newRecordImport(rt *app.Runtime) *cobra.Command {
 			if err != nil {
 				return errors.Wrap(errors.CodeInvalid, fmt.Sprintf("reading %s", fileFlag), err)
 			}
-			client, zoneID, err := resolveZone(cmd.Context(), rt)
+			client, zoneID, err := rt.ResolveZone(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -496,7 +473,7 @@ func newRecordExport(rt *app.Runtime) *cobra.Command {
 		Short: "Export DNS records as a BIND zone file",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			client, zoneID, err := resolveZone(cmd.Context(), rt)
+			client, zoneID, err := rt.ResolveZone(cmd.Context())
 			if err != nil {
 				return err
 			}

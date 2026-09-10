@@ -6,9 +6,16 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,7 +25,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/hnkNkm/flareadm/internal/cloudflare"
 	"github.com/hnkNkm/flareadm/internal/errors"
 	"github.com/hnkNkm/flareadm/internal/version"
 )
@@ -1303,4 +1312,603 @@ func TestDNSRecordStructuredUpdateMerge(t *testing.T) {
 	if res.code != errors.CodeInvalid || !strings.Contains(res.stderr, "--flags") {
 		t.Fatalf("type-change validation: code=%d stderr=%q", res.code, res.stderr)
 	}
+}
+
+// ---- v0.2: ssl + certificate ---------------------------------------------
+
+func certJSON(id string) map[string]any {
+	return map[string]any{
+		"id": id, "zone_id": zoneID, "status": "active", "bundle_method": "ubiquitous",
+		"hosts": []string{"secure.example.com"}, "issuer": "DigiCert",
+		"priority":   float64(1),
+		"expires_on": "2026-01-01T00:00:00Z", "uploaded_on": "2025-01-01T00:00:00Z", "modified_on": "2025-01-01T00:00:00Z",
+	}
+}
+
+func settingJSON(id, value string) map[string]any {
+	return map[string]any{"id": id, "value": value, "editable": true, "modified_on": "2024-01-01T00:00:00Z"}
+}
+
+// v02API serves the SSL/TLS and certificate endpoints.
+func v02API(t *testing.T) *apiStub {
+	return newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		settingsPrefix := "/zones/" + zoneID + "/settings/"
+		switch {
+		case (method == "GET" || method == "PATCH") && strings.HasPrefix(path, settingsPrefix):
+			id := strings.TrimPrefix(path, settingsPrefix)
+			return 200, envelope(settingJSON(id, "full"))
+		case method == "GET" && path == "/zones/"+zoneID+"/ssl/universal/settings":
+			return 200, envelope(map[string]any{"enabled": true})
+		case method == "PATCH" && path == "/zones/"+zoneID+"/ssl/universal/settings":
+			return 200, envelope(map[string]any{"enabled": strings.Contains(r.Body, "true")})
+		case method == "GET" && path == "/zones/"+zoneID+"/ssl/certificate_packs":
+			if strings.Contains(r.Query, "page=2") {
+				return 200, envelope([]any{})
+			}
+			return 200, envelope([]map[string]any{{
+				"id": "pack1", "type": "universal", "status": "active",
+				"hosts":                 []string{"example.com", "*.example.com"},
+				"certificate_authority": "digicert", "primary_certificate": "pcert1",
+				"certificates": []any{},
+			}})
+		case method == "GET" && path == "/zones/"+zoneID+"/ssl/certificate_packs/pack1":
+			return 200, envelope(map[string]any{
+				"id": "pack1", "type": "universal", "status": "active",
+				"hosts": []string{"example.com"}, "primary_certificate": "pcert1",
+			})
+		case method == "GET" && path == "/zones/"+zoneID+"/certificates":
+			if strings.Contains(r.Query, "page=2") {
+				return 200, envelope([]any{})
+			}
+			return 200, envelope([]map[string]any{certJSON("cert1")})
+		case method == "GET" && path == "/zones/"+zoneID+"/certificates/cert1":
+			return 200, envelope(certJSON("cert1"))
+		case method == "POST" && path == "/zones/"+zoneID+"/certificates":
+			return 200, envelope(certJSON("cert1"))
+		case method == "DELETE" && path == "/zones/"+zoneID+"/certificates/cert1":
+			return 200, envelope(map[string]any{"id": "cert1"})
+		}
+		s, b := apiErr(404, 7000, "not found")
+		return s, b
+	})
+}
+
+func TestSSLSettingGet(t *testing.T) {
+	api := v02API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+
+	// Single setting by name: exactly one GET.
+	res := runCLI(t, "ssl", "setting", "get", "min_tls_version", "--zone", zoneID, "--json", "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("code=%d stderr=%q", res.code, res.stderr)
+	}
+	if api.count() != 1 || api.last().Method != "GET" || api.last().Path != "/zones/"+zoneID+"/settings/min_tls_version" {
+		t.Fatalf("request = %+v", api.requests())
+	}
+	var env struct {
+		Data []map[string]any `json:"data"`
+		Meta struct {
+			Count int `json:"count"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal([]byte(res.stdout), &env); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	if env.Meta.Count != 1 || env.Data[0]["id"] != "min_tls_version" || env.Data[0]["value"] != "full" {
+		t.Fatalf("data = %+v", env.Data)
+	}
+
+	// All settings: one GET per setting, deterministic order.
+	api.mu.Lock()
+	api.reqs = nil
+	api.mu.Unlock()
+	res = runCLI(t, "ssl", "setting", "get", "--zone", zoneID, "--json", "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("all: code=%d stderr=%q", res.code, res.stderr)
+	}
+	reqs := api.requests()
+	if len(reqs) != 6 {
+		t.Fatalf("requests = %d, want 6", len(reqs))
+	}
+	wantOrder := cloudflare.SSLSettingsIDs
+	for i, r := range reqs {
+		if r.Path != "/zones/"+zoneID+"/settings/"+wantOrder[i] {
+			t.Fatalf("request %d path = %q, want %q", i, r.Path, wantOrder[i])
+		}
+	}
+	if err := json.Unmarshal([]byte(res.stdout), &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.Meta.Count != 6 {
+		t.Fatalf("count = %d", env.Meta.Count)
+	}
+
+	// Table output shows NAME/VALUE/EDITABLE.
+	res = runCLI(t, "ssl", "setting", "get", "ssl", "--zone", zoneID, "--endpoint-url", ep)
+	if res.code != 0 || !strings.Contains(res.stdout, "NAME") || !strings.Contains(res.stdout, "ssl") {
+		t.Fatalf("table: code=%d stdout=%q", res.code, res.stdout)
+	}
+}
+
+func TestSSLSettingUpdate(t *testing.T) {
+	api := v02API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+
+	res := runCLI(t, "ssl", "setting", "update", "--zone", zoneID, "--mode", "full", "--json", "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Method != "PATCH" || req.Path != "/zones/"+zoneID+"/settings/ssl" {
+		t.Fatalf("request = %+v", req)
+	}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, map[string]any{"value": "full"}) {
+		t.Fatalf("body = %#v", got)
+	}
+
+	// Multiple settings patch each one.
+	api.mu.Lock()
+	api.reqs = nil
+	api.mu.Unlock()
+	res = runCLI(t, "ssl", "setting", "update", "--zone", zoneID, "--mode", "strict", "--tls-1-3", "on", "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("multi: code=%d stderr=%q", res.code, res.stderr)
+	}
+	reqs := api.requests()
+	if len(reqs) != 2 || reqs[0].Path != "/zones/"+zoneID+"/settings/ssl" || reqs[1].Path != "/zones/"+zoneID+"/settings/tls_1_3" {
+		t.Fatalf("requests = %+v", reqs)
+	}
+	if got := decodeRequestBody(t, reqs[1].Body); !reflect.DeepEqual(got, map[string]any{"value": "on"}) {
+		t.Fatalf("tls_1_3 body = %#v", got)
+	}
+
+	// Validation: nothing to update, invalid value, invalid setting name.
+	if res := runCLI(t, "ssl", "setting", "update", "--zone", zoneID, "--endpoint-url", ep); res.code != errors.CodeInvalid {
+		t.Fatalf("empty update: code=%d", res.code)
+	}
+	if res := runCLI(t, "ssl", "setting", "update", "--zone", zoneID, "--mode", "bogus", "--endpoint-url", ep); res.code != errors.CodeInvalid {
+		t.Fatalf("bad value: code=%d", res.code)
+	}
+	if res := runCLI(t, "ssl", "setting", "get", "bogus", "--zone", zoneID, "--endpoint-url", ep); res.code != errors.CodeInvalid {
+		t.Fatalf("bad setting name: code=%d", res.code)
+	}
+
+	// dry-run previews without requests.
+	before := api.count()
+	res = runCLI(t, "ssl", "setting", "update", "--zone", zoneID, "--mode", "full", "--dry-run", "--endpoint-url", ep)
+	if res.code != 0 || !strings.Contains(res.stdout, "Would set ssl = full") {
+		t.Fatalf("dry-run: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if api.count() != before {
+		t.Fatalf("dry-run sent requests")
+	}
+}
+
+func TestSSLSettingUpdateErrorAndPartial(t *testing.T) {
+	// 403 on the single PATCH -> exit 4.
+	api := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		s, b := apiErr(403, 9109, "forbidden")
+		return s, b
+	})
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	res := runCLI(t, "ssl", "setting", "update", "--zone", zoneID, "--mode", "full", "--endpoint-url", ep)
+	if res.code != errors.CodePermission {
+		t.Fatalf("single 403: code=%d, want 4 (stderr=%q)", res.code, res.stderr)
+	}
+
+	// First PATCH ok, second 403 -> partial failure exit 9.
+	api2 := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		if strings.HasSuffix(path, "/settings/ssl") {
+			return 200, envelope(settingJSON("ssl", "full"))
+		}
+		s, b := apiErr(403, 9109, "forbidden")
+		return s, b
+	})
+	ep2 := api2.srv.URL
+	res = runCLI(t, "ssl", "setting", "update", "--zone", zoneID, "--mode", "full", "--tls-1-3", "on", "--endpoint-url", ep2)
+	if res.code != errors.CodePartial {
+		t.Fatalf("partial: code=%d, want 9 (stderr=%q)", res.code, res.stderr)
+	}
+	if !strings.Contains(res.stderr, "partially applied") {
+		t.Fatalf("partial message: %q", res.stderr)
+	}
+}
+
+func TestSSLUniversal(t *testing.T) {
+	api := v02API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+
+	res := runCLI(t, "ssl", "universal", "get", "--zone", zoneID, "--json", "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("get: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Method != "GET" || req.Path != "/zones/"+zoneID+"/ssl/universal/settings" {
+		t.Fatalf("get request = %+v", req)
+	}
+	if !strings.Contains(res.stdout, `"enabled": true`) {
+		t.Fatalf("get output = %s", res.stdout)
+	}
+
+	res = runCLI(t, "ssl", "universal", "enable", "--zone", zoneID, "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("enable: code=%d", res.code)
+	}
+	req = api.last()
+	if req.Method != "PATCH" || req.Path != "/zones/"+zoneID+"/ssl/universal/settings" {
+		t.Fatalf("enable request = %+v", req)
+	}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, map[string]any{"enabled": true}) {
+		t.Fatalf("enable body = %#v", got)
+	}
+
+	res = runCLI(t, "ssl", "universal", "disable", "--zone", zoneID, "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("disable: code=%d", res.code)
+	}
+	if got := decodeRequestBody(t, api.last().Body); !reflect.DeepEqual(got, map[string]any{"enabled": false}) {
+		t.Fatalf("disable body = %#v", got)
+	}
+
+	// 404 -> exit 5.
+	api404 := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		s, b := apiErr(404, 7000, "zone not found")
+		return s, b
+	})
+	res = runCLI(t, "ssl", "universal", "get", "--zone", zoneID, "--endpoint-url", api404.srv.URL)
+	if res.code != errors.CodeNotFound {
+		t.Fatalf("404: code=%d, want 5", res.code)
+	}
+}
+
+func TestSSLCertificatePackListGet(t *testing.T) {
+	api := v02API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+
+	res := runCLI(t, "ssl", "certificate-pack", "list", "--zone", zoneID,
+		"--status", "active", "--deploy", "production", "--json", "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("list: code=%d stderr=%q", res.code, res.stderr)
+	}
+	first := api.requests()[0]
+	if first.Path != "/zones/"+zoneID+"/ssl/certificate_packs" {
+		t.Fatalf("path = %q", first.Path)
+	}
+	if !strings.Contains(first.Query, "status=active") || !strings.Contains(first.Query, "deploy=production") {
+		t.Fatalf("query = %q", first.Query)
+	}
+	// auto-pagination: page 1 + terminating empty page
+	if api.count() != 2 {
+		t.Fatalf("requests = %d, want 2 (page 1 + empty)", api.count())
+	}
+	if !strings.Contains(res.stdout, `"id": "pack1"`) || !strings.Contains(res.stdout, `"*.example.com"`) {
+		t.Fatalf("list output = %s", res.stdout)
+	}
+
+	res = runCLI(t, "ssl", "certificate-pack", "get", "pack1", "--zone", zoneID, "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("get: code=%d", res.code)
+	}
+	req := api.last()
+	if req.Method != "GET" || req.Path != "/zones/"+zoneID+"/ssl/certificate_packs/pack1" {
+		t.Fatalf("get request = %+v", req)
+	}
+	if !strings.Contains(res.stdout, "pack1") {
+		t.Fatalf("get output = %q", res.stdout)
+	}
+
+	// invalid deploy filter -> exit 2, no request
+	before := api.count()
+	if res := runCLI(t, "ssl", "certificate-pack", "list", "--zone", zoneID, "--deploy", "bogus", "--endpoint-url", ep); res.code != errors.CodeInvalid {
+		t.Fatalf("bad deploy: code=%d", res.code)
+	}
+	if api.count() != before {
+		t.Fatalf("validation sent a request")
+	}
+}
+
+func TestCertificateListGet(t *testing.T) {
+	api := v02API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+
+	res := runCLI(t, "certificate", "list", "--zone", zoneID, "--status", "active", "--json", "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("list: code=%d stderr=%q", res.code, res.stderr)
+	}
+	first := api.requests()[0]
+	if first.Path != "/zones/"+zoneID+"/certificates" || !strings.Contains(first.Query, "status=active") {
+		t.Fatalf("request = %+v", first)
+	}
+	if api.count() != 2 {
+		t.Fatalf("requests = %d, want 2 (page 1 + empty)", api.count())
+	}
+	if !strings.Contains(res.stdout, `"secure.example.com"`) || !strings.Contains(res.stdout, `"status": "active"`) {
+		t.Fatalf("list output = %s", res.stdout)
+	}
+
+	res = runCLI(t, "certificate", "get", "cert1", "--zone", zoneID, "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("get: code=%d", res.code)
+	}
+	req := api.last()
+	if req.Method != "GET" || req.Path != "/zones/"+zoneID+"/certificates/cert1" {
+		t.Fatalf("get request = %+v", req)
+	}
+	if !strings.Contains(res.stdout, "cert1") || !strings.Contains(res.stdout, "active") {
+		t.Fatalf("get output = %q", res.stdout)
+	}
+
+	// invalid status -> exit 2; 403 path -> exit 4.
+	if res := runCLI(t, "certificate", "list", "--zone", zoneID, "--status", "bogus", "--endpoint-url", ep); res.code != errors.CodeInvalid {
+		t.Fatalf("bad status: code=%d", res.code)
+	}
+	api403 := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		s, b := apiErr(403, 9109, "forbidden")
+		return s, b
+	})
+	if res := runCLI(t, "certificate", "list", "--zone", zoneID, "--endpoint-url", api403.srv.URL); res.code != errors.CodePermission {
+		t.Fatalf("403: code=%d, want 4", res.code)
+	}
+}
+
+func TestCertificateCreate(t *testing.T) {
+	api := v02API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+
+	dir := t.TempDir()
+	certFile := filepath.Join(dir, "cert.pem")
+	keyFile := filepath.Join(dir, "key.pem")
+	_ = os.WriteFile(certFile, []byte("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"), 0o600)
+	_ = os.WriteFile(keyFile, []byte("-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----"), 0o600)
+
+	res := runCLI(t, "certificate", "create", "--zone", zoneID,
+		"--certificate", "@"+certFile, "--private-key", "@"+keyFile,
+		"--bundle-method", "optimal", "--deploy", "production", "--type", "sni_custom",
+		"--json", "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("create: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Method != "POST" || req.Path != "/zones/"+zoneID+"/certificates" {
+		t.Fatalf("request = %+v", req)
+	}
+	want := map[string]any{
+		"certificate":   "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
+		"private_key":   "-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----",
+		"bundle_method": "optimal",
+		"deploy":        "production",
+		"type":          "sni_custom",
+	}
+	if got := decodeRequestBody(t, req.Body); !reflect.DeepEqual(got, want) {
+		t.Fatalf("body mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+	// The private key must never be echoed back to the user.
+	if strings.Contains(res.stdout, "MIIE") || strings.Contains(res.stderr, "MIIE") {
+		t.Fatalf("private key leaked: stdout=%q stderr=%q", res.stdout, res.stderr)
+	}
+	if !strings.Contains(res.stdout, "cert1") {
+		t.Fatalf("create output = %s", res.stdout)
+	}
+
+	// Validation.
+	if res := runCLI(t, "certificate", "create", "--zone", zoneID, "--endpoint-url", ep); res.code != errors.CodeInvalid {
+		t.Fatalf("missing certificate: code=%d", res.code)
+	}
+	if res := runCLI(t, "certificate", "create", "--zone", zoneID, "--certificate", "@"+certFile, "--bundle-method", "bogus", "--endpoint-url", ep); res.code != errors.CodeInvalid {
+		t.Fatalf("bad bundle method: code=%d", res.code)
+	}
+	if res := runCLI(t, "certificate", "create", "--zone", zoneID, "--certificate", "@/no/such/cert.pem", "--endpoint-url", ep); res.code != errors.CodeInvalid {
+		t.Fatalf("missing file: code=%d", res.code)
+	}
+}
+
+func TestCertificateDeleteGuardRails(t *testing.T) {
+	api := v02API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+	base := []string{"certificate", "delete", "cert1", "--zone", zoneID, "--endpoint-url", ep}
+
+	// Non-interactive without --yes: exit 2, no DELETE.
+	res := runCLI(t, base...)
+	if res.code != errors.CodeInvalid {
+		t.Fatalf("refusal: code=%d, want 2", res.code)
+	}
+	for _, r := range api.requests() {
+		if r.Method == "DELETE" {
+			t.Fatalf("DELETE sent without confirmation")
+		}
+	}
+	if !strings.Contains(res.stderr, "--yes") {
+		t.Fatalf("error should mention --yes: %q", res.stderr)
+	}
+
+	// --dry-run: GET only, preview printed.
+	before := api.count()
+	res = runCLI(t, append(append([]string{}, base...), "--dry-run")...)
+	if res.code != 0 || !strings.Contains(res.stdout, "Would delete certificate cert1") {
+		t.Fatalf("dry-run: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if api.count() != before+1 || api.last().Method != "GET" {
+		t.Fatalf("dry-run requests: %+v", api.requests())
+	}
+
+	// --yes deletes.
+	res = runCLI(t, append(append([]string{}, base...), "--yes")...)
+	if res.code != 0 {
+		t.Fatalf("delete: code=%d stderr=%q", res.code, res.stderr)
+	}
+	req := api.last()
+	if req.Method != "DELETE" || req.Path != "/zones/"+zoneID+"/certificates/cert1" {
+		t.Fatalf("delete request = %+v", req)
+	}
+	if res.stdout != "" {
+		t.Fatalf("delete stdout = %q, want empty", res.stdout)
+	}
+}
+
+func TestV02MissingZoneExitTwo(t *testing.T) {
+	for _, args := range [][]string{
+		{"ssl", "setting", "get"},
+		{"ssl", "setting", "update", "--mode", "full"},
+		{"ssl", "universal", "get"},
+		{"ssl", "certificate-pack", "list"},
+		{"certificate", "list"},
+		{"certificate", "get", "cert1"},
+	} {
+		res := runCLI(t, args...)
+		if res.code != errors.CodeInvalid {
+			t.Fatalf("%v: code=%d, want 2 (stderr=%q)", args, res.code, res.stderr)
+		}
+		if !strings.Contains(res.stderr, "zone") {
+			t.Fatalf("%v: error should mention the zone: %q", args, res.stderr)
+		}
+	}
+}
+
+func TestCertificatePrivateKeyFileOnly(t *testing.T) {
+	api := v02API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+
+	dir := t.TempDir()
+	certFile := filepath.Join(dir, "cert.pem")
+	keyFile := filepath.Join(dir, "key.pem")
+	_ = os.WriteFile(certFile, []byte("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"), 0o600)
+	keyPEM := "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkq\n-----END PRIVATE KEY-----"
+	_ = os.WriteFile(keyFile, []byte(keyPEM), 0o600)
+
+	// Inline key value must be rejected with exit 2 before any request.
+	before := api.count()
+	res := runCLI(t, "certificate", "create", "--zone", zoneID,
+		"--certificate", "@"+certFile, "--private-key", keyPEM, "--endpoint-url", ep)
+	if res.code != errors.CodeInvalid {
+		t.Fatalf("inline key: code=%d, want 2 (stderr=%q)", res.code, res.stderr)
+	}
+	if !strings.Contains(res.stderr, "@") || !strings.Contains(res.stderr, "private-key") {
+		t.Fatalf("inline key error should point at the @file form: %q", res.stderr)
+	}
+	if strings.Contains(res.stderr, "MIIEvQIBADANBgkq") || strings.Contains(res.stderr, "PRIVATE KEY-----") {
+		t.Fatalf("inline key material leaked into stderr: %q", res.stderr)
+	}
+	if api.count() != before {
+		t.Fatalf("rejected inline key still sent a request")
+	}
+
+	// @file form is accepted and sent verbatim.
+	res = runCLI(t, "certificate", "create", "--zone", zoneID,
+		"--certificate", "@"+certFile, "--private-key", "@"+keyFile, "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("file key: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if got := decodeRequestBody(t, api.last().Body); got["private_key"] != keyPEM {
+		t.Fatalf("private_key not sent from file: %#v", got)
+	}
+	if strings.Contains(res.stdout, "MIIEvQIBADANBgkq") || strings.Contains(res.stderr, "MIIEvQIBADANBgkq") {
+		t.Fatalf("key leaked into command output")
+	}
+}
+
+func TestCertificatePrivateKeyNeverEchoedOnAPIError(t *testing.T) {
+	keyPEM := "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----"
+	// A hostile/stub API echoes the request data back in a 400 body.
+	api := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		s, b := apiErr(400, 1004, "invalid request: "+r.Body)
+		return s, b
+	})
+	setToken(t, "tok")
+	newHome(t)
+	dir := t.TempDir()
+	certFile := filepath.Join(dir, "cert.pem")
+	keyFile := filepath.Join(dir, "key.pem")
+	_ = os.WriteFile(certFile, []byte("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"), 0o600)
+	_ = os.WriteFile(keyFile, []byte(keyPEM), 0o600)
+
+	res := runCLI(t, "certificate", "create", "--zone", zoneID,
+		"--certificate", "@"+certFile, "--private-key", "@"+keyFile,
+		"--debug", "--endpoint-url", api.srv.URL)
+	if res.code != errors.CodeInvalid {
+		t.Fatalf("api 400: code=%d, want 2 (stderr=%q)", res.code, res.stderr)
+	}
+	if strings.Contains(res.stderr, "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC") ||
+		strings.Contains(res.stderr, "BEGIN PRIVATE KEY") ||
+		strings.Contains(res.stdout, "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC") {
+		t.Fatalf("key material leaked through the API error path:\nstdout=%q\nstderr=%q", res.stdout, res.stderr)
+	}
+	if !strings.Contains(res.stderr, "[REDACTED") {
+		t.Fatalf("expected redaction marker in stderr: %q", res.stderr)
+	}
+}
+
+func TestCertificateCreateDryRunHidesKey(t *testing.T) {
+	api := v02API(t)
+	setToken(t, "tok")
+	newHome(t)
+	ep := api.srv.URL
+
+	certPEM, keyPEM := selfSignedCert(t, "dry.example.com")
+	dir := t.TempDir()
+	certFile := filepath.Join(dir, "cert.pem")
+	keyFile := filepath.Join(dir, "key.pem")
+	_ = os.WriteFile(certFile, []byte(certPEM), 0o600)
+	_ = os.WriteFile(keyFile, []byte(keyPEM), 0o600)
+
+	before := api.count()
+	res := runCLI(t, "certificate", "create", "--zone", zoneID,
+		"--certificate", "@"+certFile, "--private-key", "@"+keyFile,
+		"--dry-run", "--endpoint-url", ep)
+	if res.code != 0 {
+		t.Fatalf("dry-run: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if !strings.Contains(res.stdout, "Would upload a certificate") || !strings.Contains(res.stdout, "dry.example.com") {
+		t.Fatalf("dry-run preview = %q", res.stdout)
+	}
+	if strings.Contains(res.stdout, "PRIVATE KEY") || strings.Contains(res.stdout, "MII") || strings.Contains(res.stderr, "PRIVATE KEY") {
+		t.Fatalf("dry-run leaked key material: stdout=%q stderr=%q", res.stdout, res.stderr)
+	}
+	if api.count() != before {
+		t.Fatalf("dry-run sent a request")
+	}
+}
+
+// selfSignedCert returns a throwaway certificate/key pair for dry-run tests.
+func selfSignedCert(t *testing.T, host string) (certPEM, keyPEM string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: host},
+		DNSNames:     []string{host},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM = string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}))
+	return certPEM, keyPEM
 }

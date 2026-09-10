@@ -5,6 +5,7 @@
 package app
 
 import (
+	"context"
 	"io"
 	"os"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/hnkNkm/flareadm/internal/output"
 	"github.com/hnkNkm/flareadm/internal/pagination"
 	"github.com/hnkNkm/flareadm/internal/profile"
+	"github.com/hnkNkm/flareadm/internal/resolver"
 )
 
 // DefaultTimeout is the per-request attempt timeout when --timeout is not
@@ -53,6 +55,7 @@ type Runtime struct {
 	env func(string) string
 
 	// Derived state.
+	secrets   []string
 	format    output.Format
 	cfg       *config.Config
 	cfgErr    error
@@ -83,6 +86,32 @@ func (rt *Runtime) SetEnv(fn func(string) string) { rt.env = fn }
 // Getenv reads an environment variable through the runtime's environment
 // source.
 func (rt *Runtime) Getenv(key string) string { return rt.env(key) }
+
+// ProtectSecret registers sensitive material (for example an uploaded
+// private key) that must be scrubbed from diagnostics and error output.
+func (rt *Runtime) ProtectSecret(secret string) {
+	if secret == "" {
+		return
+	}
+	for _, existing := range rt.secrets {
+		if existing == secret {
+			return
+		}
+	}
+	rt.secrets = append(rt.secrets, secret)
+	if rt.logger != nil {
+		rt.logger.AddSecret(secret)
+	}
+}
+
+// Redact scrubs every registered secret, the resolved API token and any
+// embedded PEM private-key block from s.
+func (rt *Runtime) Redact(s string) string {
+	for _, secret := range rt.secrets {
+		s = auth.Redact(s, secret)
+	}
+	return auth.RedactPEMBlocks(s)
+}
 
 // Init validates flags and prepares shared state. It runs once per
 // invocation from the root command's PersistentPreRunE. Configuration file
@@ -208,6 +237,7 @@ func (rt *Runtime) CloudClient() (*cloudflare.Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	rt.ProtectSecret(cred.Token)
 	if rt.logger != nil {
 		rt.logger.SetToken(cred.Token)
 		rt.logger.Infof("profile %q; token source: %s; endpoint: %s",
@@ -256,6 +286,28 @@ func (rt *Runtime) ZoneReference(positional string) (string, error) {
 		return eff.Profile.DefaultZone, nil
 	}
 	return "", errors.Usage("a zone is required: pass a zone argument or --zone <name-or-id>")
+}
+
+// ResolveZone resolves the zone reference (--zone or profile default_zone),
+// builds the Cloudflare client and returns both plus the resolved zone id.
+// Shared by every zone-scoped command group.
+func (rt *Runtime) ResolveZone(ctx context.Context) (*cloudflare.Client, string, error) {
+	ref, err := rt.ZoneReference("")
+	if err != nil {
+		return nil, "", err
+	}
+	client, err := rt.CloudClient()
+	if err != nil {
+		return nil, "", err
+	}
+	zoneID, err := resolver.NewZone(client).Resolve(ctx, ref)
+	if err != nil {
+		return nil, "", err
+	}
+	if zoneID != ref {
+		rt.Logger().Infof("resolved zone %q to %s", ref, zoneID)
+	}
+	return client, zoneID, nil
 }
 
 // Confirm asks for destructive-operation consent.

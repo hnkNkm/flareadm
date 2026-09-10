@@ -2,7 +2,6 @@
 package cache
 
 import (
-	"context"
 	"fmt"
 	"strings"
 
@@ -12,7 +11,6 @@ import (
 	"github.com/hnkNkm/flareadm/internal/cloudflare"
 	"github.com/hnkNkm/flareadm/internal/errors"
 	"github.com/hnkNkm/flareadm/internal/output"
-	"github.com/hnkNkm/flareadm/internal/resolver"
 )
 
 // New builds the cache command group.
@@ -46,7 +44,7 @@ func newPurge(rt *app.Runtime) *cobra.Command {
 			if _, err := buildPurgeDescription(targets); err != nil {
 				return err
 			}
-			client, zoneID, err := resolveZone(cmd.Context(), rt)
+			client, zoneID, err := rt.ResolveZone(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -78,26 +76,6 @@ func newPurge(rt *app.Runtime) *cobra.Command {
 	cmd.Flags().StringArrayVar(&tags, "tag", nil, "purge one cache tag (repeatable)")
 	cmd.Flags().StringArrayVar(&prefixes, "prefix", nil, "purge one URL prefix (repeatable)")
 	return cmd
-}
-
-// resolveZone resolves the zone reference for the purge target zone.
-func resolveZone(ctx context.Context, rt *app.Runtime) (*cloudflare.Client, string, error) {
-	ref, err := rt.ZoneReference("")
-	if err != nil {
-		return nil, "", err
-	}
-	client, err := rt.CloudClient()
-	if err != nil {
-		return nil, "", err
-	}
-	zoneID, err := resolver.NewZone(client).Resolve(ctx, ref)
-	if err != nil {
-		return nil, "", err
-	}
-	if zoneID != ref {
-		rt.Logger().Infof("resolved zone %q to %s", ref, zoneID)
-	}
-	return client, zoneID, nil
 }
 
 // buildPurgeDescription validates that exactly one purge kind is selected

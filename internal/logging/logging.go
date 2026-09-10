@@ -20,6 +20,7 @@ type Logger struct {
 	mu      sync.Mutex
 	w       io.Writer
 	token   string
+	secrets []string
 	verbose bool
 	debug   bool
 }
@@ -34,6 +35,22 @@ func (l *Logger) Enabled() bool { return l != nil && l.verbose }
 
 // DebugEnabled reports whether debug output is enabled.
 func (l *Logger) DebugEnabled() bool { return l != nil && l.debug }
+
+// AddSecret registers additional sensitive material (for example an
+// uploaded private key) to be scrubbed from every log line.
+func (l *Logger) AddSecret(secret string) {
+	if l == nil || secret == "" {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, existing := range l.secrets {
+		if existing == secret {
+			return
+		}
+	}
+	l.secrets = append(l.secrets, secret)
+}
 
 // SetToken updates the token scrubbed from log lines (the token is only
 // known after credential resolution).
@@ -65,6 +82,10 @@ func (l *Logger) Debugf(format string, args ...any) {
 func (l *Logger) write(level, format string, args ...any) {
 	line := fmt.Sprintf(format, args...)
 	line = auth.Redact(line, l.token)
+	for _, secret := range l.secrets {
+		line = auth.Redact(line, secret)
+	}
+	line = auth.RedactPEMBlocks(line)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	ts := time.Now().Format("2006-01-02T15:04:05.000Z07:00")

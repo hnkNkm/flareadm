@@ -13,6 +13,7 @@ package auth
 
 import (
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/hnkNkm/flareadm/internal/config"
@@ -68,6 +69,16 @@ func Require(profile *config.Profile) (Credential, error) {
 		return Credential{}, errors.New(errors.CodeAuth, "%s", msg)
 	}
 	return cred, nil
+}
+
+// pemBlockRE matches any PEM private-key block (optionally a whole body).
+var pemBlockRE = regexp.MustCompile(`(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?(-----END [A-Z0-9 ]*PRIVATE KEY-----|$)`)
+
+// RedactPEMBlocks removes full PEM private-key blocks from s. Used as a
+// defense-in-depth scrub so upstream error bodies echoing request material
+// can never surface key content.
+func RedactPEMBlocks(s string) string {
+	return pemBlockRE.ReplaceAllString(s, "[REDACTED PRIVATE KEY]")
 }
 
 // Redact replaces the token (and any "Bearer <token>" occurrences) in s with

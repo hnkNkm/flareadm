@@ -129,3 +129,58 @@ type resultInfo struct {
 	TotalCount int64 `json:"total_count"`
 	TotalPages int64 `json:"total_pages"`
 }
+
+// ---- v0.2: zone SSL/TLS and certificates ---------------------------------
+
+// SSLSetting is one zone SSL/TLS setting (GET/PATCH
+// /zones/{zone}/settings/{setting_id}). Value is rendered as its textual
+// form ("full", "1.2", "on", ...).
+type SSLSetting struct {
+	ID         string `json:"id" yaml:"id"`
+	Value      string `json:"value" yaml:"value"`
+	Editable   bool   `json:"editable" yaml:"editable"`
+	ModifiedOn string `json:"modified_on,omitempty" yaml:"modified_on,omitempty"`
+}
+
+// UniversalSSL is the zone Universal SSL setting.
+type UniversalSSL struct {
+	Enabled bool `json:"enabled" yaml:"enabled"`
+}
+
+// CertificatePackCertificate is one certificate inside a certificate pack.
+type CertificatePackCertificate struct {
+	ID           string   `json:"id" yaml:"id"`
+	Status       string   `json:"status" yaml:"status"`
+	Hosts        []string `json:"hosts,omitempty" yaml:"hosts,omitempty"`
+	Issuer       string   `json:"issuer,omitempty" yaml:"issuer,omitempty"`
+	BundleMethod string   `json:"bundle_method,omitempty" yaml:"bundle_method,omitempty"`
+	ExpiresOn    string   `json:"expires_on,omitempty" yaml:"expires_on,omitempty"`
+	ModifiedOn   string   `json:"modified_on,omitempty" yaml:"modified_on,omitempty"`
+}
+
+// CertificatePack is a zone SSL certificate pack.
+type CertificatePack struct {
+	ID                   string                       `json:"id" yaml:"id"`
+	Type                 string                       `json:"type" yaml:"type"`
+	Status               string                       `json:"status" yaml:"status"`
+	Hosts                []string                     `json:"hosts,omitempty" yaml:"hosts,omitempty"`
+	CertificateAuthority string                       `json:"certificate_authority,omitempty" yaml:"certificate_authority,omitempty"`
+	PrimaryCertificate   string                       `json:"primary_certificate,omitempty" yaml:"primary_certificate,omitempty"`
+	Certificates         []CertificatePackCertificate `json:"certificates,omitempty" yaml:"certificates,omitempty"`
+}
+
+// Certificate is a zone custom certificate (GET/POST/DELETE
+// /zones/{zone}/certificates).
+type Certificate struct {
+	ID                 string   `json:"id" yaml:"id"`
+	ZoneID             string   `json:"zone_id,omitempty" yaml:"zone_id,omitempty"`
+	Status             string   `json:"status" yaml:"status"`
+	BundleMethod       string   `json:"bundle_method,omitempty" yaml:"bundle_method,omitempty"`
+	Hosts              []string `json:"hosts,omitempty" yaml:"hosts,omitempty"`
+	Issuer             string   `json:"issuer,omitempty" yaml:"issuer,omitempty"`
+	Priority           float64  `json:"priority,omitempty" yaml:"priority,omitempty"`
+	ExpiresOn          string   `json:"expires_on,omitempty" yaml:"expires_on,omitempty"`
+	UploadedOn         string   `json:"uploaded_on,omitempty" yaml:"uploaded_on,omitempty"`
+	ModifiedOn         string   `json:"modified_on,omitempty" yaml:"modified_on,omitempty"`
+	PolicyRestrictions string   `json:"policy_restrictions,omitempty" yaml:"policy_restrictions,omitempty"`
+}

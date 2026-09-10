@@ -31,7 +31,7 @@ func newDNSSECGet(rt *app.Runtime) *cobra.Command {
 		Short: "Show the DNSSEC status of a zone",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			client, zoneID, err := resolveZone(cmd.Context(), rt)
+			client, zoneID, err := rt.ResolveZone(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -51,7 +51,7 @@ func newDNSSECSet(rt *app.Runtime, verb, status string) *cobra.Command {
 		Long:  "Set the zone DNSSEC status to " + status + ".",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			client, zoneID, err := resolveZone(cmd.Context(), rt)
+			client, zoneID, err := rt.ResolveZone(cmd.Context())
 			if err != nil {
 				return err
 			}
