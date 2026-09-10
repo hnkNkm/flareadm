@@ -140,14 +140,21 @@ How a release is cut:
 
 3. The tag triggers the release workflow, which runs GoReleaser to build the six target
    archives and publishes a GitHub release containing those archives, a `checksums.txt`
-   SHA-256 file and Syft-generated SBOMs.
-4. The workflow then attaches a GitHub build-provenance attestation covering the archives and
-   the checksums file.
+   SHA-256 file, Syft-generated SBOMs, and a cosign keyless signature and certificate for
+   `checksums.txt`. Signing the checksum file covers every archive listed in it.
+4. Signing uses cosign keyless (Sigstore Fulcio via the workflow's OIDC token). GitHub
+   build-provenance attestations are not available for user-owned private repositories, which
+   is why they are not used.
 
 How a consumer verifies a downloaded artifact:
 
 ```bash
-gh attestation verify flareadm_<version>_<os>_<arch>.tar.gz --repo hnkNkm/flareadm
+cosign verify-blob \
+  --certificate-identity-regexp '^https://github\.com/hnkNkm/flareadm/\.github/workflows/release\.yml@refs/tags/v.*$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --signature checksums.txt.sig \
+  --certificate checksums.txt.pem \
+  checksums.txt
 sha256sum --check checksums.txt
 ```
 
