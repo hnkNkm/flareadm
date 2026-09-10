@@ -106,8 +106,8 @@ flareadm
 ├── r2
 │   └── bucket list|get|create|delete
 ├── kv
-│   └── namespace list|get|create|delete
-│       └── key list|get|put|delete
+│   ├── namespace list|get|create|delete
+│   └── key list|get|put|delete
 ├── d1
 │   └── database list|get|create|update|delete|query|raw|export|import|bookmark|restore
 ├── queue
@@ -115,9 +115,10 @@ flareadm
 │   ├── consumer list|get|create|update|delete
 │   └── message push|pull|peek|ack|delete
 ├── hyperdrive config list|get|create|update|delete
-├── vectorize index list|get|create|delete|info
-│   ├── metadata list|create|delete
-│   └── vector insert|upsert|query|get|list
+├── vectorize
+│   ├── index list|get|create|delete|info
+│   │   └── metadata list|create|delete
+│   └── vector insert|upsert|query|get|delete|list
 ├── zero-trust
 │   ├── tunnel
 │   │   ├── list|get|create|update|delete|token
@@ -144,6 +145,60 @@ flareadm
 │       ├── physical-device list|get|delete|revoke
 │       ├── posture list|get|create|update|delete
 │       └── settings get|update
+├── workers
+│   ├── script
+│   │   ├── list|update|delete
+│   │   ├── content get
+│   │   ├── settings get|update
+│   │   ├── secret list|get|create|delete
+│   │   ├── version list|get|create
+│   │   ├── deployment list|get|create|delete
+│   │   ├── schedule get|update
+│   │   └── subdomain get|enable|disable
+│   ├── route list|get|create|update|delete
+│   ├── domain list|get|create|delete
+│   ├── subdomain get|update|delete
+│   └── account-settings get|update
+├── pages
+│   └── project
+│       ├── list|get|create|update|delete
+│       ├── deployment list|get|delete
+│       └── domain list|get|create|update|delete
+├── logpush
+│   ├── job list|get|create|update|delete
+│   ├── dataset
+│   │   ├── field list
+│   │   └── job list
+│   └── transformer
+│       ├── list|get|create|update|delete
+│       ├── content get
+│       └── version list
+├── healthcheck
+│   ├── list|get|create|update|delete
+│   └── preview create|get|delete
+├── load-balancer
+│   ├── list|get|create|update|delete
+│   ├── pool
+│   │   ├── list|get|create|update|delete
+│   │   └── health get
+│   ├── monitor list|get|create|update|delete
+│   └── region list|get
+├── notifications
+│   ├── policy list|get|create|update|delete
+│   ├── webhook list|get|create|update|delete
+│   ├── pagerduty list|delete
+│   ├── silence list|get|create|update|delete
+│   ├── history list
+│   └── alert-type list
+├── audit-log list
+├── analytics
+│   ├── summary get DATASET
+│   ├── timeseries get DATASET
+│   └── top-n get DATASET
+├── logs query
+├── registrar
+│   ├── domain list|get|update
+│   └── registration list|get|update
 ├── page-rule list|get|create|update|delete
 ├── cache
 │   ├── purge
@@ -390,6 +445,9 @@ PowerShell
 ```bash
 flareadm completion zsh
 ```
+
+`flareadm completion bash|zsh|fish|powershell` all emit a working script. The full command
+surface is also generated into `docs/commands.md`.
 
 ## AI-agent compatibility
 

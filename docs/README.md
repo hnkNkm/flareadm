@@ -10,7 +10,7 @@ terminal, a script, a CI pipeline or an AI agent.
 It complements Wrangler rather than replacing it. Use Wrangler for Workers application
 development; use FlareADM for remote account and infrastructure administration.
 
-**Status:** v0.3.0 and v0.4.0 released (2026-09-10); v0.5 in progress. Command surface, exit codes and normalized output are usable. See the [roadmap](roadmap.md).
+**Status:** v0.4.0 released (2026-09-10); v0.5 and v0.6 delivered; v1.0 readiness in progress. Command surface, exit codes and normalized output are usable. See the [roadmap](roadmap.md).
 
 ## At a glance
 

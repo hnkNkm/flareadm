@@ -160,28 +160,46 @@ Deferred in v0.4:
 
 ### v0.5 — Workers platform administration
 
-```text
-workers metadata
-deployments
-routes
-domains
-secrets
-pages projects/deployments
-```
+Delivered:
+
+- Workers scripts (`list`/`update`/`delete`), deployed `content get`, `settings get`/`update`
+  and `secret list`/`get`/`create`/`delete`;
+- script `version list`/`get`/`create`, `deployment list`/`get`/`create`/`delete`,
+  `schedule get`/`update` and `subdomain get`/`enable`/`disable`;
+- account-scoped `route`, `domain`, `subdomain` and `account-settings` administration;
+- Pages projects (`list`/`get`/`create`/`update`/`delete`) with `deployment list`/`get`/`delete`
+  and `domain list`/`get`/`create`/`update`/`delete`.
+
+Deferred in v0.5:
+
+- deployment creation via manifests/assets;
+- retry/rollback verbs pending a docs amendment;
+- tail/streaming;
+- Durable Objects internals;
+- Workers AI.
 
 Local development remains out of scope.
 
 ### v0.6 — Operations and observability
 
-```text
-audit logs
-logpush
-analytics
-notifications
-health checks
-load balancing
-registrar/domain administration where API access permits
-```
+Delivered:
+
+- Logpush `job` CRUD, dataset `field`/`job` discovery and `transformer` CRUD with `content get`
+  and `version list`;
+- zone `healthcheck` CRUD with `preview create`/`get`/`delete`;
+- `load-balancer` CRUD with `pool` (and `health`), `monitor` and `region`;
+- `notifications` policies, webhooks, PagerDuty, silences, history and alert types;
+- `audit-log list`;
+- `analytics summary`/`timeseries`/`top-n get DATASET`;
+- `logs query`;
+- `registrar domain` and `registrar registration`.
+
+Deferred in v0.6:
+
+- GraphQL-only analytics datasets;
+- logpull / real-time streaming;
+- notifications PagerDuty connect/link;
+- registrar create.
 
 ### v1.0
 
