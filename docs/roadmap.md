@@ -116,14 +116,15 @@ Still open:
 Delivered:
 
 - r2 buckets `list`/`get`/`create`/`delete`;
-- kv namespaces `list`/`get`/`create`/`delete` and keys `list`/`get`/`put`/`delete`.
+- kv namespaces `list`/`get`/`create`/`delete` and keys `list`/`get`/`put`/`delete`;
+- d1 databases (`list`/`get`/`create`/`update`/`delete`, `query`/`raw`, `export`/`import`,
+  `bookmark`, `restore`);
+- queues (`list`/`get`/`create`/`update`/`delete`, `metrics`, `purge`, consumers, messages).
 
 Still open:
 
-- d1 (in progress);
-- queues (in progress);
-- hyperdrive;
-- vectorize.
+- hyperdrive (in progress);
+- vectorize (in progress).
 
 The scope is remote administration only.
 

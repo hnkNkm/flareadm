@@ -108,6 +108,12 @@ flareadm
 ├── kv
 │   └── namespace list|get|create|delete
 │       └── key list|get|put|delete
+├── d1
+│   └── database list|get|create|update|delete|query|raw|export|import|bookmark|restore
+├── queue
+│   ├── list|get|create|update|delete|metrics|purge
+│   ├── consumer list|get|create|update|delete
+│   └── message push|pull|peek|ack|delete
 ├── page-rule list|get|create|update|delete
 ├── cache
 │   ├── purge
@@ -140,6 +146,9 @@ existing rules; `--rules @file` takes a Cloudflare rules array.
 
 Page rules are legacy: use `ruleset`, `cache rule` or `redirect rule` for new configuration.
 Account-scoped groups (`r2`, `kv`) resolve the account through the standard resolution order.
+
+`d1 database query|raw` print per-statement results (JSON keeps the full statement structure);
+`queue message` verbs use the shared confirmation rules for destructive operations.
 
 ## Global options
 
