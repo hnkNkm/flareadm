@@ -56,19 +56,50 @@ func resolve(profile *config.Profile, env func(string) string) (Credential, bool
 	return Credential{}, false
 }
 
+// OAuthSource supplies the stored OAuth credential for the active profile.
+// Implementations refresh an expired credential before returning it and must
+// report ok=false when nothing is stored. It is the last step of the
+// resolution chain (docs/oauth.md §8).
+type OAuthSource func() (Credential, bool, error)
+
 // Require resolves credentials or fails with an actionable authentication
 // error (exit code 3).
 func Require(profile *config.Profile) (Credential, error) {
 	cred, ok := Resolve(profile)
 	if !ok {
-		msg := "no API token found; set FLAREADM_API_TOKEN, CLOUDFLARE_API_TOKEN or CF_API_TOKEN"
-		if profile != nil && profile.APITokenEnv != "" {
-			msg += ", or set the profile api_token_env variable (" + profile.APITokenEnv + ")"
-		}
-		msg += ", or run 'flareadm configure init'"
-		return Credential{}, errors.New(errors.CodeAuth, "%s", msg)
+		return Credential{}, missingCredentialError(profile)
 	}
 	return cred, nil
+}
+
+// RequireWithOAuth resolves credentials with the documented chain: the
+// environment first (absolutely unchanged: CI behaviour must not move), then
+// the stored OAuth credential. When neither source has a credential the error
+// is identical to Require's.
+func RequireWithOAuth(profile *config.Profile, oauth OAuthSource) (Credential, error) {
+	if cred, ok := Resolve(profile); ok {
+		return cred, nil
+	}
+	if oauth != nil {
+		cred, ok, err := oauth()
+		if err != nil {
+			return Credential{}, err
+		}
+		if ok {
+			return cred, nil
+		}
+	}
+	return Credential{}, missingCredentialError(profile)
+}
+
+// missingCredentialError builds the shared "no credential" diagnostic.
+func missingCredentialError(profile *config.Profile) error {
+	msg := "no API token found; set FLAREADM_API_TOKEN, CLOUDFLARE_API_TOKEN or CF_API_TOKEN"
+	if profile != nil && profile.APITokenEnv != "" {
+		msg += ", or set the profile api_token_env variable (" + profile.APITokenEnv + ")"
+	}
+	msg += ", or run 'flareadm configure init'"
+	return errors.New(errors.CodeAuth, "%s", msg)
 }
 
 // pemBlockRE matches any PEM private-key block (optionally a whole body).

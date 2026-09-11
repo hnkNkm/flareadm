@@ -8,6 +8,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/hnkNkm/flareadm/internal/auth"
@@ -16,6 +17,7 @@ import (
 	"github.com/hnkNkm/flareadm/internal/confirm"
 	"github.com/hnkNkm/flareadm/internal/errors"
 	"github.com/hnkNkm/flareadm/internal/logging"
+	"github.com/hnkNkm/flareadm/internal/oauth"
 	"github.com/hnkNkm/flareadm/internal/output"
 	"github.com/hnkNkm/flareadm/internal/pagination"
 	"github.com/hnkNkm/flareadm/internal/profile"
@@ -195,16 +197,78 @@ func (rt *Runtime) ActiveProfilePtr() (*config.Profile, error) {
 	return eff.Profile, nil
 }
 
-// Credential resolves the API token for the active profile.
+// Credential resolves the API token for the active profile: environment
+// credentials first, then the stored OAuth credential (docs/oauth.md §8).
 func (rt *Runtime) Credential() (auth.Credential, error) {
 	eff, err := rt.ActiveProfile()
 	if err != nil {
 		return auth.Credential{}, err
 	}
 	if eff.Exists {
-		return auth.Require(eff.Profile)
+		return auth.RequireWithOAuth(eff.Profile, rt.OAuthCredential)
 	}
-	return auth.Require(nil)
+	return auth.RequireWithOAuth(nil, rt.OAuthCredential)
+}
+
+// OAuthStore returns the OAuth credential store, which lives beside the
+// configuration file so both share the platform path rules
+// (docs/oauth.md §7.1).
+func (rt *Runtime) OAuthStore() oauth.Store {
+	return oauth.Store{Dir: filepath.Join(config.DefaultDir(), "oauth")}
+}
+
+// OAuthCredential loads the stored OAuth credential for the active profile,
+// refreshing it first when it is about to expire. ok is false when no
+// credential is stored; a rejected refresh fails with exit code 3 and points
+// at `auth login`.
+func (rt *Runtime) OAuthCredential() (auth.Credential, bool, error) {
+	profileName := rt.ActiveProfileName()
+	store := rt.OAuthStore()
+	cred, ok, err := store.Load(profileName)
+	if err != nil || !ok {
+		return auth.Credential{}, false, err
+	}
+	rt.ProtectSecret(cred.AccessToken)
+	rt.ProtectSecret(cred.RefreshToken)
+	source := "oauth:" + profileName
+	if !cred.Expired(time.Now()) {
+		return auth.Credential{Token: cred.AccessToken, Source: source}, true, nil
+	}
+	clientID := cred.ClientID
+	if clientID == "" {
+		if eff, err := rt.ActiveProfile(); err == nil && eff.Exists {
+			clientID = eff.Profile.OAuthClientID
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), rt.oauthRequestTimeout())
+	defer cancel()
+	refreshed, err := oauth.Refresh(ctx, oauth.RefreshOptions{
+		ClientID:   clientID,
+		Credential: cred,
+		Endpoints:  oauth.EndpointsFromEnv(rt.Getenv),
+		Protect:    rt.ProtectSecret,
+	})
+	if err != nil {
+		if errors.CodeOf(err) == errors.CodeAuth {
+			return auth.Credential{}, false, errors.New(errors.CodeAuth,
+				"%s; run 'flareadm auth login' to sign in again", err)
+		}
+		return auth.Credential{}, false, err
+	}
+	if err := store.Save(profileName, refreshed); err != nil {
+		return auth.Credential{}, false, err
+	}
+	rt.ProtectSecret(refreshed.AccessToken)
+	rt.ProtectSecret(refreshed.RefreshToken)
+	return auth.Credential{Token: refreshed.AccessToken, Source: source}, true, nil
+}
+
+// oauthRequestTimeout bounds a credential refresh.
+func (rt *Runtime) oauthRequestTimeout() time.Duration {
+	if rt.TimeoutFlag > 0 {
+		return rt.TimeoutFlag
+	}
+	return 30 * time.Second
 }
 
 // Policy returns the pagination policy from the global flags.

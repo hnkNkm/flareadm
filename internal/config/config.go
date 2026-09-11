@@ -35,6 +35,10 @@ type Profile struct {
 	AccountID   string `toml:"account_id" json:"account_id,omitempty" yaml:"account_id,omitempty"`
 	APITokenEnv string `toml:"api_token_env" json:"api_token_env,omitempty" yaml:"api_token_env,omitempty"`
 	DefaultZone string `toml:"default_zone" json:"default_zone,omitempty" yaml:"default_zone,omitempty"`
+	// OAuthClientID is the registered OAuth client used by `auth login`.
+	// It is optional: --client-id overrides it. Hand-edited files are
+	// supported; `configure set` does not document the key yet.
+	OAuthClientID string `toml:"oauth_client_id" json:"oauth_client_id,omitempty" yaml:"oauth_client_id,omitempty"`
 }
 
 // fileConfig mirrors the on-disk TOML structure.
@@ -72,6 +76,11 @@ func DefaultPath() string {
 	}
 	return filepath.Join(home, ".config", DefaultDirName, DefaultFileName)
 }
+
+// DefaultDir returns the FlareADM configuration directory (the parent of
+// DefaultPath). The OAuth credential store lives beside the configuration
+// file, so both share the platform path rules.
+func DefaultDir() string { return filepath.Dir(DefaultPath()) }
 
 // Load reads the configuration at path. A missing file is not an error: it
 // yields an empty configuration document that commands may write to.
@@ -152,6 +161,9 @@ func (c *Config) Save() error {
 		}
 		if p.DefaultZone != "" {
 			fmt.Fprintf(&sb, "default_zone = %s\n", quote(p.DefaultZone))
+		}
+		if p.OAuthClientID != "" {
+			fmt.Fprintf(&sb, "oauth_client_id = %s\n", quote(p.OAuthClientID))
 		}
 		sb.WriteString("\n")
 	}

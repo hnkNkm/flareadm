@@ -18,13 +18,16 @@ import (
 	"math/big"
 	"mime"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -9309,5 +9312,706 @@ func TestExitCodeSuccessAndNetwork(t *testing.T) {
 	res = runCLI(t, "zone", "list", "--timeout", "50ms", "--endpoint-url", slow.srv.URL)
 	if res.code != errors.CodeNetwork {
 		t.Fatalf("timeout: code=%d, want %d (stderr=%q)", res.code, errors.CodeNetwork, res.stderr)
+	}
+}
+
+// ---- OAuth phases 1-2: store, resolution chain, login/logout (docs/oauth.md §11) ----
+
+// lockedBuffer is a concurrency-safe writer for commands that run in a
+// goroutine while the test drives the fake browser.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// oauthStub is an offline OAuth provider: an authorize page that redirects to
+// the loopback callback plus token and revocation endpoints. No live network is
+// involved.
+type oauthStub struct {
+	server    *httptest.Server
+	mu        sync.Mutex
+	forms     []url.Values
+	deny      bool
+	rejectRev bool
+}
+
+func newOAuthStub(t *testing.T) *oauthStub {
+	t.Helper()
+	s := &oauthStub{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth2/auth", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		redirect, err := url.Parse(q.Get("redirect_uri"))
+		if err != nil || redirect.Scheme == "" {
+			http.Error(w, "bad redirect_uri", http.StatusBadRequest)
+			return
+		}
+		next := redirect.Query()
+		if s.deny {
+			next.Set("error", "access_denied")
+		} else {
+			next.Set("code", "cli-auth-code")
+		}
+		next.Set("state", q.Get("state"))
+		redirect.RawQuery = next.Encode()
+		http.Redirect(w, r, redirect.String(), http.StatusFound)
+	})
+	mux.HandleFunc("/oauth2/token", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		s.mu.Lock()
+		s.forms = append(s.forms, r.PostForm)
+		s.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "cli-access-token",
+			"refresh_token": "cli-refresh-token",
+			"expires_in":    3600,
+			"scope":         "openid offline_access account:read",
+			"token_type":    "Bearer",
+		})
+	})
+	mux.HandleFunc("/oauth2/revoke", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		s.mu.Lock()
+		s.forms = append(s.forms, r.PostForm)
+		reject := s.rejectRev
+		s.mu.Unlock()
+		if reject {
+			http.Error(w, "invalid_token", http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	s.server = httptest.NewServer(mux)
+	t.Cleanup(s.server.Close)
+	return s
+}
+
+func (s *oauthStub) apply(t *testing.T) {
+	t.Helper()
+	t.Setenv("FLAREADM_OAUTH_AUTH_URL", s.server.URL+"/oauth2/auth")
+	t.Setenv("FLAREADM_OAUTH_TOKEN_URL", s.server.URL+"/oauth2/token")
+	t.Setenv("FLAREADM_OAUTH_REVOKE_URL", s.server.URL+"/oauth2/revoke")
+}
+
+func (s *oauthStub) lastForm(t *testing.T) url.Values {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.forms) == 0 {
+		t.Fatal("no oauth request recorded")
+	}
+	return s.forms[len(s.forms)-1]
+}
+
+// freePort returns a currently free loopback port.
+func freePort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	return ln.Addr().(*net.TCPAddr).Port
+}
+
+// writeStoredCredential seeds the OAuth store for a profile.
+func writeStoredCredential(t *testing.T, profile string, cred map[string]any) string {
+	t.Helper()
+	dir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "flareadm", "oauth")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, profile+".json")
+	data, err := json.Marshal(cred)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func storedCredentialMap(expiry time.Time) map[string]any {
+	return map[string]any{
+		"version":       1,
+		"client_id":     "cli-client",
+		"access_token":  "stored-access-token",
+		"refresh_token": "stored-refresh-token",
+		"token_type":    "Bearer",
+		"expires_at":    expiry.UTC().Format(time.RFC3339),
+		"scopes":        []string{"openid", "account:read"},
+	}
+}
+
+// TestOAuthResolutionPrecedence covers the four chain combinations
+// (docs/oauth.md §8): env only, store only, both, neither.
+func TestOAuthResolutionPrecedence(t *testing.T) {
+	setToken(t, "env-token")
+	newHome(t)
+
+	// env only
+	res := runCLI(t, "auth", "status")
+	if res.code != 0 || !strings.Contains(res.stdout, "FLAREADM_API_TOKEN") {
+		t.Fatalf("env only: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if !strings.Contains(res.stdout, "api token (environment)") {
+		t.Fatalf("env only kind missing: %s", res.stdout)
+	}
+
+	// both: the environment wins and the store is not consulted
+	writeStoredCredential(t, "default", storedCredentialMap(time.Now().Add(time.Hour)))
+	res = runCLI(t, "auth", "status")
+	if res.code != 0 || !strings.Contains(res.stdout, "FLAREADM_API_TOKEN") {
+		t.Fatalf("both: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if strings.Contains(res.stdout, "oauth:") {
+		t.Fatalf("environment must win over the store: %s", res.stdout)
+	}
+
+	// store only
+	t.Setenv("FLAREADM_API_TOKEN", "")
+	t.Setenv("CLOUDFLARE_API_TOKEN", "")
+	t.Setenv("CF_API_TOKEN", "")
+	res = runCLI(t, "auth", "status")
+	if res.code != 0 {
+		t.Fatalf("store only: code=%d stderr=%q", res.code, res.stderr)
+	}
+	for _, want := range []string{"oauth:default", "cli-client", "REFRESH TOKEN", "account:read", "STORE"} {
+		if !strings.Contains(res.stdout, want) {
+			t.Fatalf("store only output missing %q: %s", want, res.stdout)
+		}
+	}
+	if strings.Contains(res.stdout, "stored-access-token") || strings.Contains(res.stdout, "stored-refresh-token") {
+		t.Fatalf("status must never print token material: %s", res.stdout)
+	}
+	// --json is the normalized envelope
+	res = runCLI(t, "auth", "status", "--json")
+	if res.code != 0 || !strings.Contains(res.stdout, `"SOURCE": "oauth:default"`) {
+		t.Fatalf("status --json: code=%d stdout=%q", res.code, res.stdout)
+	}
+
+	// neither: unchanged message and exit 3
+	if err := os.Remove(filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "flareadm", "oauth", "default.json")); err != nil {
+		t.Fatal(err)
+	}
+	res = runCLI(t, "auth", "status")
+	if res.code != errors.CodeAuth {
+		t.Fatalf("neither: code=%d, want 3", res.code)
+	}
+	if !strings.Contains(res.stderr, "no credential found") {
+		t.Fatalf("neither: stderr=%q", res.stderr)
+	}
+	res = runCLI(t, "zone", "list", "--endpoint-url", "http://127.0.0.1:1/")
+	if res.code != errors.CodeAuth || !strings.Contains(res.stderr, "no API token found; set FLAREADM_API_TOKEN") {
+		t.Fatalf("unchanged missing-credential error: code=%d stderr=%q", res.code, res.stderr)
+	}
+}
+
+// TestOAuthStoreBackedAPICall proves the store is used as the client bearer
+// credential without any environment token.
+func TestOAuthStoreBackedAPICall(t *testing.T) {
+	api := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		if method == "GET" && path == "/zones" {
+			if r.Auth != "Bearer stored-access-token" {
+				t.Errorf("authorization = %q, want the stored OAuth access token", r.Auth)
+			}
+			return 200, envelopeWithInfo([]any{map[string]any{"id": zoneID, "name": "example.com", "status": "active"}},
+				map[string]any{"page": float64(1), "per_page": float64(100), "count": float64(1), "total_count": float64(1), "total_pages": float64(1)})
+		}
+		s, b := apiErr(404, 7000, "not found")
+		return s, b
+	})
+	newHome(t)
+	t.Setenv("FLAREADM_API_TOKEN", "")
+	writeStoredCredential(t, "default", storedCredentialMap(time.Now().Add(time.Hour)))
+	res := runCLI(t, "zone", "list", "--endpoint-url", api.srv.URL)
+	if res.code != 0 {
+		t.Fatalf("store-backed call: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if !strings.Contains(res.stdout, "example.com") {
+		t.Fatalf("store-backed output = %s", res.stdout)
+	}
+}
+
+func TestOAuthLoginNonInteractiveExitsTwoWithoutListener(t *testing.T) {
+	stub := newOAuthStub(t)
+	stub.apply(t)
+	newHome(t)
+	t.Setenv("FLAREADM_API_TOKEN", "")
+
+	res := runCLI(t, "auth", "login", "--client-id", "cli-client")
+	if res.code != errors.CodeInvalid {
+		t.Fatalf("non-interactive login: code=%d, want 2 (stderr=%q)", res.code, res.stderr)
+	}
+	if !strings.Contains(res.stderr, "FLAREADM_API_TOKEN") || !strings.Contains(res.stderr, "--no-browser") {
+		t.Fatalf("message should name the headless alternatives: %q", res.stderr)
+	}
+	// No listener, no token request, no credential written.
+	if _, err := os.Stat(filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "flareadm", "oauth")); !os.IsNotExist(err) {
+		t.Fatalf("login must not create the store: %v", err)
+	}
+	stub.mu.Lock()
+	requests := len(stub.forms)
+	stub.mu.Unlock()
+	if requests != 0 {
+		t.Fatalf("login must not call the token endpoint, got %d requests", requests)
+	}
+}
+
+func TestOAuthLoginNoBrowserTimeoutExitsEight(t *testing.T) {
+	stub := newOAuthStub(t)
+	stub.apply(t)
+	newHome(t)
+	t.Setenv("FLAREADM_API_TOKEN", "")
+
+	port := freePort(t)
+	res := runCLI(t, "auth", "login", "--client-id", "cli-client", "--no-browser",
+		"--callback-port", strconv.Itoa(port), "--timeout", "300ms")
+	if res.code != errors.CodeNetwork {
+		t.Fatalf("timeout: code=%d, want 8 (stdout=%q stderr=%q)", res.code, res.stdout, res.stderr)
+	}
+	if n := countURLLines(res.stdout); n != 1 {
+		t.Fatalf("the authorize URL must be printed once, got %d URL lines: %q", n, res.stdout)
+	}
+	if !strings.Contains(res.stderr, "timed out") {
+		t.Fatalf("timeout message missing: %q", res.stderr)
+	}
+}
+
+func TestOAuthLoginFullFlowThroughCLI(t *testing.T) {
+	stub := newOAuthStub(t)
+	stub.apply(t)
+	newHome(t)
+	t.Setenv("FLAREADM_API_TOKEN", "")
+
+	port := freePort(t)
+	out, errOut := &lockedBuffer{}, &lockedBuffer{}
+	done := make(chan int, 1)
+	go func() {
+		done <- Run(context.Background(),
+			[]string{"auth", "login", "--client-id", "cli-client", "--no-browser",
+				"--callback-port", strconv.Itoa(port), "--timeout", "10s", "--debug"},
+			strings.NewReader(""), out, errOut)
+	}()
+
+	authorize := waitForLine(t, out)
+	resp, err := http.Get(authorize) //nolint:gosec // loopback test URL
+	if err != nil {
+		t.Fatalf("browser: %v", err)
+	}
+	_ = resp.Body.Close()
+	if code := <-done; code != 0 {
+		t.Fatalf("login: code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+
+	// The authorize URL carried PKCE S256 and the offline scopes.
+	parsed, err := url.Parse(authorize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := parsed.Query()
+	if q.Get("code_challenge_method") != "S256" || q.Get("code_challenge") == "" || q.Get("state") == "" {
+		t.Fatalf("authorize query = %v", q)
+	}
+	if !strings.Contains(q.Get("scope"), "offline_access") {
+		t.Fatalf("scope = %q", q.Get("scope"))
+	}
+
+	// The token request is a public-client code exchange.
+	form := stub.lastForm(t)
+	if form.Get("grant_type") != "authorization_code" || form.Get("code") != "cli-auth-code" ||
+		form.Get("code_verifier") == "" || form.Get("client_secret") != "" {
+		t.Fatalf("token request = %v", form)
+	}
+
+	// The credential (including the refresh token) is stored.
+	path := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "flareadm", "oauth", "default.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("credential not stored: %v", err)
+	}
+	var stored map[string]any
+	if err := json.Unmarshal(data, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored["refresh_token"] != "cli-refresh-token" || stored["access_token"] != "cli-access-token" {
+		t.Fatalf("stored credential = %#v", stored)
+	}
+	if stored["version"] != float64(1) {
+		t.Fatalf("credential version = %v", stored["version"])
+	}
+
+	// Redaction: no credential material on stdout/stderr, even with --debug.
+	combined := out.String() + errOut.String()
+	for _, secret := range []string{"cli-access-token", "cli-refresh-token", "cli-auth-code"} {
+		if strings.Contains(combined, secret) {
+			t.Fatalf("secret %q leaked into CLI output:\n%s", secret, combined)
+		}
+	}
+	// Tokens are owner-only (POSIX modes are not meaningful on Windows).
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Fatalf("credential mode = %o, want 600", perm)
+		}
+	}
+
+	// auth status now reports the stored credential.
+	res := runCLI(t, "auth", "status")
+	if res.code != 0 || !strings.Contains(res.stdout, "oauth:default") {
+		t.Fatalf("status after login: code=%d stdout=%q", res.code, res.stdout)
+	}
+}
+
+// countURLLines counts printed lines that are themselves URLs.
+func countURLLines(output string) int {
+	n := 0
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "http") {
+			n++
+		}
+	}
+	return n
+}
+
+// waitForLine polls a buffer until a line starting with http appears.
+func waitForLine(t *testing.T, b *lockedBuffer) string {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, line := range strings.Split(b.String(), "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "http") {
+				return strings.TrimSpace(line)
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("no URL line appeared; output so far: %q", b.String())
+	return ""
+}
+
+func TestOAuthLoginDeniedAndStateMismatch(t *testing.T) {
+	stub := newOAuthStub(t)
+	stub.apply(t)
+	newHome(t)
+	t.Setenv("FLAREADM_API_TOKEN", "")
+
+	// A denied consent exits 3 and stores nothing.
+	stub.mu.Lock()
+	stub.deny = true
+	stub.mu.Unlock()
+	port := freePort(t)
+	out, errOut := &lockedBuffer{}, &lockedBuffer{}
+	done := make(chan int, 1)
+	go func() {
+		done <- Run(context.Background(),
+			[]string{"auth", "login", "--client-id", "cli-client", "--no-browser",
+				"--callback-port", strconv.Itoa(port), "--timeout", "10s"},
+			strings.NewReader(""), out, errOut)
+	}()
+	authorize := waitForLine(t, out)
+	resp, err := http.Get(authorize) //nolint:gosec // loopback test URL
+	if err != nil {
+		t.Fatalf("browser: %v", err)
+	}
+	_ = resp.Body.Close()
+	if code := <-done; code != errors.CodeAuth {
+		t.Fatalf("denied consent: code=%d, want 3 (stderr=%q)", code, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "access_denied") {
+		t.Fatalf("denial not reported: %q", errOut.String())
+	}
+	if _, err := os.Stat(filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "flareadm", "oauth", "default.json")); !os.IsNotExist(err) {
+		t.Fatalf("a denied login must not store a credential: %v", err)
+	}
+
+	// A callback with the wrong state is rejected.
+	stub.mu.Lock()
+	stub.deny = false
+	stub.mu.Unlock()
+	port = freePort(t)
+	out, errOut = &lockedBuffer{}, &lockedBuffer{}
+	done = make(chan int, 1)
+	go func() {
+		done <- Run(context.Background(),
+			[]string{"auth", "login", "--client-id", "cli-client", "--no-browser",
+				"--callback-port", strconv.Itoa(port), "--timeout", "10s"},
+			strings.NewReader(""), out, errOut)
+	}()
+	authorize = waitForLine(t, out)
+	parsed, err := url.Parse(authorize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	callback := parsed.Query().Get("redirect_uri")
+	resp, err = http.Get(callback + "?code=stolen&state=wrong") //nolint:gosec // loopback test URL
+	if err != nil {
+		t.Fatalf("callback: %v", err)
+	}
+	_ = resp.Body.Close()
+	if code := <-done; code != errors.CodeAuth {
+		t.Fatalf("state mismatch: code=%d, want 3 (stderr=%q)", code, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "state mismatch") {
+		t.Fatalf("state mismatch not reported: %q", errOut.String())
+	}
+}
+
+func TestOAuthLoginValidationAndDryRun(t *testing.T) {
+	stub := newOAuthStub(t)
+	stub.apply(t)
+	newHome(t)
+	t.Setenv("FLAREADM_API_TOKEN", "")
+
+	// Missing client id.
+	if res := runCLI(t, "auth", "login", "--no-browser"); res.code != errors.CodeInvalid ||
+		!strings.Contains(res.stderr, "--client-id is required") {
+		t.Fatalf("missing client id: code=%d stderr=%q", res.code, res.stderr)
+	}
+	// Unknown scope, conflicting scope flags, bad port.
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--client-id", "c", "--scopes", "not:a-scope"}, "unknown scope"},
+		{[]string{"--client-id", "c", "--scopes", "account:read", "--all-scopes"}, "cannot be combined"},
+		{[]string{"--client-id", "c", "--all-scopes", "--read-only"}, "mutually exclusive"},
+		{[]string{"--client-id", "c", "--callback-port", "70000"}, "between 0 and 65535"},
+	} {
+		res := runCLI(t, append([]string{"auth", "login"}, tc.args...)...)
+		if res.code != errors.CodeInvalid || !strings.Contains(res.stderr, tc.want) {
+			t.Fatalf("%v: code=%d stderr=%q (want %q)", tc.args, res.code, res.stderr, tc.want)
+		}
+	}
+	// --dry-run previews and never starts a listener.
+	res := runCLI(t, "auth", "login", "--client-id", "cli-client", "--dry-run", "--all-scopes")
+	if res.code != 0 || !strings.Contains(res.stdout, "Would start an OAuth login") {
+		t.Fatalf("dry-run: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if strings.Contains(res.stdout, "cli-access-token") {
+		t.Fatalf("dry-run must not print tokens: %q", res.stdout)
+	}
+	if _, err := os.Stat(filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "flareadm", "oauth")); !os.IsNotExist(err) {
+		t.Fatalf("dry-run must not write the store: %v", err)
+	}
+
+	// The profile key oauth_client_id is honoured.
+	if err := os.MkdirAll(filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "flareadm"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "flareadm", "config.toml")
+	if err := os.WriteFile(cfg, []byte("[profile.default]\noauth_client_id = \"from-profile\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res = runCLI(t, "auth", "login", "--dry-run", "--no-browser")
+	if res.code != 0 || !strings.Contains(res.stdout, "Would start an OAuth login") {
+		t.Fatalf("profile client id: code=%d stderr=%q", res.code, res.stderr)
+	}
+}
+
+func TestOAuthLoginRefusesWhileEnvCredentialsExist(t *testing.T) {
+	newHome(t)
+	setToken(t, "existing-token")
+	stub := newOAuthStub(t)
+	stub.apply(t)
+
+	res := runCLI(t, "auth", "login", "--client-id", "cli-client", "--no-browser")
+	if res.code != errors.CodeInvalid {
+		t.Fatalf("code=%d, want 2 (stderr=%q)", res.code, res.stderr)
+	}
+	if !strings.Contains(res.stderr, "already authenticated") || !strings.Contains(res.stderr, "FLAREADM_API_TOKEN") {
+		t.Fatalf("message should name the variable to unset: %q", res.stderr)
+	}
+}
+
+func TestOAuthUnwritableStoreExitsOne(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX directory permissions are not enforced on Windows; the uncreatable-directory case is covered by internal/oauth")
+	}
+	stub := newOAuthStub(t)
+	stub.apply(t)
+	newHome(t)
+	t.Setenv("FLAREADM_API_TOKEN", "")
+	// The credential directory exists but cannot be written to (the parent
+	// chain stays writable so only the store write fails).
+	base := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "flareadm")
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(base, "oauth")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+
+	port := freePort(t)
+	out, errOut := &lockedBuffer{}, &lockedBuffer{}
+	done := make(chan int, 1)
+	go func() {
+		done <- Run(context.Background(),
+			[]string{"auth", "login", "--client-id", "cli-client", "--no-browser",
+				"--callback-port", strconv.Itoa(port), "--timeout", "10s"},
+			strings.NewReader(""), out, errOut)
+	}()
+	authorize := waitForLine(t, out)
+	resp, err := http.Get(authorize) //nolint:gosec // loopback test URL
+	if err != nil {
+		t.Fatalf("browser: %v", err)
+	}
+	_ = resp.Body.Close()
+	if code := <-done; code != errors.CodeUnclassified {
+		t.Fatalf("unwritable store: code=%d, want 1 (stderr=%q)", code, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "oauth") {
+		t.Fatalf("error should name the credential directory: %q", errOut.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "default.json")); !os.IsNotExist(err) {
+		t.Fatalf("a failed login must not leave a credential behind: %v", err)
+	}
+}
+
+func TestOAuthLogout(t *testing.T) {
+	stub := newOAuthStub(t)
+	stub.apply(t)
+	newHome(t)
+	t.Setenv("FLAREADM_API_TOKEN", "")
+	path := writeStoredCredential(t, "default", storedCredentialMap(time.Now().Add(time.Hour)))
+
+	// Refusal without --yes in a non-interactive session.
+	if res := runCLI(t, "auth", "logout"); res.code != errors.CodeInvalid {
+		t.Fatalf("logout refusal: code=%d, want 2", res.code)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("refused logout must keep the credential: %v", err)
+	}
+
+	// Dry-run previews and keeps everything.
+	res := runCLI(t, "auth", "logout", "--dry-run")
+	if res.code != 0 || !strings.Contains(res.stdout, "Would revoke the OAuth credential") {
+		t.Fatalf("logout dry-run: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("dry-run must keep the credential: %v", err)
+	}
+	stub.mu.Lock()
+	before := len(stub.forms)
+	stub.mu.Unlock()
+
+	// --yes revokes the refresh token and deletes the file.
+	res = runCLI(t, "auth", "logout", "--yes")
+	if res.code != 0 {
+		t.Fatalf("logout: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if form := stub.lastForm(t); form.Get("token") != "stored-refresh-token" || form.Get("token_type_hint") != "refresh_token" {
+		t.Fatalf("revoke request = %v", form)
+	}
+	stub.mu.Lock()
+	after := len(stub.forms)
+	stub.mu.Unlock()
+	if after != before+1 {
+		t.Fatalf("expected exactly one revoke request, got %d", after-before)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("credential should be deleted: %v", err)
+	}
+
+	// Nothing stored: exit 3 with a clear message.
+	if res := runCLI(t, "auth", "logout", "--yes"); res.code != errors.CodeAuth {
+		t.Fatalf("logout without a credential: code=%d, want 3", res.code)
+	}
+
+	// --local deletes without calling the revoke endpoint.
+	writeStoredCredential(t, "default", storedCredentialMap(time.Now().Add(time.Hour)))
+	stub.mu.Lock()
+	before = len(stub.forms)
+	stub.mu.Unlock()
+	res = runCLI(t, "auth", "logout", "--yes", "--local")
+	if res.code != 0 {
+		t.Fatalf("local logout: code=%d stderr=%q", res.code, res.stderr)
+	}
+	stub.mu.Lock()
+	after = len(stub.forms)
+	stub.mu.Unlock()
+	if after != before {
+		t.Fatalf("--local must not call the revoke endpoint")
+	}
+
+	// A rejected revocation exits 3 but still deletes the local credential.
+	writeStoredCredential(t, "default", storedCredentialMap(time.Now().Add(time.Hour)))
+	stub.mu.Lock()
+	stub.rejectRev = true
+	stub.mu.Unlock()
+	res = runCLI(t, "auth", "logout", "--yes")
+	if res.code != errors.CodeAuth {
+		t.Fatalf("rejected revocation: code=%d, want 3", res.code)
+	}
+	if !strings.Contains(res.stderr, "deleted anyway") {
+		t.Fatalf("message should say the credential was deleted: %q", res.stderr)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("rejected revocation still deletes locally: %v", err)
+	}
+
+	// A network failure keeps the credential so logout can be retried.
+	writeStoredCredential(t, "default", storedCredentialMap(time.Now().Add(time.Hour)))
+	t.Setenv("FLAREADM_OAUTH_REVOKE_URL", "http://127.0.0.1:1/oauth2/revoke")
+	res = runCLI(t, "auth", "logout", "--yes")
+	if res.code != errors.CodeNetwork {
+		t.Fatalf("network failure: code=%d, want 8", res.code)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("network failure must keep the credential: %v", err)
+	}
+}
+
+// TestOAuthExpiredCredentialRefreshes covers the Phase 1 half of the refresh
+// contract: an expired stored credential is refreshed before the API call and
+// the rotated credential is persisted.
+func TestOAuthExpiredCredentialRefreshes(t *testing.T) {
+	stub := newOAuthStub(t)
+	stub.apply(t)
+	api := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		if r.Auth != "Bearer cli-access-token" {
+			t.Errorf("authorization = %q, want the refreshed token", r.Auth)
+		}
+		return 200, envelopeWithInfo([]any{}, map[string]any{"page": float64(1), "per_page": float64(100), "count": float64(0), "total_count": float64(0), "total_pages": float64(1)})
+	})
+	newHome(t)
+	t.Setenv("FLAREADM_API_TOKEN", "")
+	writeStoredCredential(t, "default", storedCredentialMap(time.Now().Add(time.Minute)))
+
+	res := runCLI(t, "zone", "list", "--endpoint-url", api.srv.URL)
+	if res.code != 0 {
+		t.Fatalf("refresh-backed call: code=%d stderr=%q", res.code, res.stderr)
+	}
+	form := stub.lastForm(t)
+	if form.Get("grant_type") != "refresh_token" || form.Get("refresh_token") != "stored-refresh-token" {
+		t.Fatalf("refresh request = %v", form)
+	}
+	data, err := os.ReadFile(filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "flareadm", "oauth", "default.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "cli-refresh-token") {
+		t.Fatalf("rotated credential not persisted: %s", data)
 	}
 }

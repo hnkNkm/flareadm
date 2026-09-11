@@ -1,4 +1,4 @@
-// Package auth implements `flareadm auth verify`.
+// Package auth implements `flareadm auth verify|login|logout|status`.
 package auth
 
 import (
@@ -15,6 +15,9 @@ func New(rt *app.Runtime) *cobra.Command {
 		Short: "Authentication helpers",
 	}
 	cmd.AddCommand(newVerify(rt))
+	cmd.AddCommand(newLogin(rt))
+	cmd.AddCommand(newLogout(rt))
+	cmd.AddCommand(newStatus(rt))
 	return cmd
 }
 
