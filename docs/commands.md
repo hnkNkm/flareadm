@@ -421,10 +421,14 @@ flareadm auth status [flags]
 
 ## `flareadm auth verify`
 
-Verify the resolved API token
+Verify the resolved credential
 
-Verify the API token resolved for the active profile by calling
-GET /user/tokens/verify. The token itself is never printed.
+Verify the credential resolved for the active profile.
+
+An API token is checked with GET /user/tokens/verify, which reports the
+token object's status. An OAuth credential is checked with GET /user,
+because an OAuth access token has no token object to verify
+(docs/oauth.md §5 Q4). The credential itself is never printed.
 
 ```text
 flareadm auth verify [flags]
@@ -5257,7 +5261,7 @@ flareadm profile create NAME [flags]
 - `--api-token-env string` — name of the environment variable holding the API token
 - `--default-zone string` — default zone name or id for the profile
 - `-h, --help` — help for create
-- `--oauth-client-id string` — OAuth client id used by `auth login`
+- `--oauth-client-id string` — OAuth client id used by 'auth login'
 
 **Global flags:**
 
@@ -5393,7 +5397,7 @@ flareadm profile update NAME [flags]
 - `--api-token-env string` — name of the environment variable holding the API token
 - `--default-zone string` — default zone name or id for the profile
 - `-h, --help` — help for update
-- `--oauth-client-id string` — OAuth client id used by `auth login`
+- `--oauth-client-id string` — OAuth client id used by 'auth login'
 
 **Global flags:**
 

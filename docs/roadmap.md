@@ -214,13 +214,13 @@ The compatibility policy below is now in effect for post-1.0 releases.
 
 ### v1.1
 
-OAuth login (`auth login` / `auth logout` / `auth status`) is specified in
-[oauth.md](oauth.md). **Phases 1-2 are implemented but unreleased**: the per-profile credential
-store (owner-only, atomic, versioned), the resolution-chain fallback behind environment
-variables, the PKCE loopback flow with refresh and revocation, and the `auth` subcommands.
-**Phases 3-5 are pending**: refresh/expiry hardening, verify/scope reporting, and docs + release.
-It remains blocked on the client-id decision and the Phase 0 live verification spike recorded in
-`oauth.md`.
+OAuth login (`auth login` / `auth logout` / `auth status`, plus `auth verify` for OAuth
+credentials) is specified in [oauth.md](oauth.md). **Phases 1-4 are implemented but unreleased**:
+the per-profile credential store (owner-only, atomic, versioned), the resolution-chain fallback
+behind environment variables, the PKCE loopback flow with revocation, proactive refresh and 401
+refresh-and-retry, identity verification and scope-aware 403 guidance. **Phase 5 (docs and
+release) is pending.** It remains blocked on the client-id decision and the Phase 0 live scope
+verification recorded in `oauth.md`.
 
 ## Compatibility policy
 

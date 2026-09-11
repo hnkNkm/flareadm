@@ -1,11 +1,12 @@
 # OAuth login for FlareADM
 
-**Status: Phases 1-2 implemented (unreleased); Phases 3-5 pending.** FlareADM authenticates with
-Cloudflare API tokens and additionally supports a stored OAuth credential obtained with
-`flareadm auth login` (see `docs/configuration.md`); environment variables still take precedence.
-The credential store, the resolution-chain fallback and `auth login`/`logout`/`status` exist in
-the binary. The remaining phases, open questions and blocking decisions below are still pending
-verification against a live account.
+**Status: Phases 1-4 implemented (unreleased); Phase 5 (docs/release) pending.** FlareADM
+authenticates with Cloudflare API tokens and additionally supports a stored OAuth credential
+obtained with `flareadm auth login` (see `docs/configuration.md`); environment variables still take
+precedence. The credential store, the resolution-chain fallback, the PKCE loopback flow with
+proactive refresh and 401 refresh-and-retry, `auth login`/`logout`/`status`/`verify`, and
+scope-aware 403 guidance all exist in the binary. The open questions and blocking decisions below
+(Q1 client id, the Phase 0 live verification spike) are still pending.
 
 Every factual claim about Cloudflare cites the URL it came from. Claims that the public
 documentation does not support are marked `[INFERENCE]` with the reasoning, or listed under
@@ -497,6 +498,9 @@ Today `auth verify` validates an API token. With OAuth it must use `GET /user` (
 rather than `GET /user/tokens/verify` (E6, §5 Q4), and report the user's email and account list.
 Exit codes unchanged: 0 valid, 3 authentication failure, 8 network failure.
 
+**Implemented (Phase 4):** `auth verify` checks an API token with `GET /user/tokens/verify` and an
+OAuth credential with `GET /user`, reporting the user id, email and name. Exit codes are unchanged.
+
 ### 6.5 Exit-code contract (consistent with `docs/cli.md`)
 
 | Situation | Code |
@@ -758,7 +762,10 @@ against a live account before implementation is claimed complete:
 - **Q9 (risk): user-permission intersection.** `[INFERENCE]` A granted scope never exceeds the
   user's own role; commands may therefore fail with 403 for reasons unrelated to the token. The
   error message must distinguish "scope not granted" (re-login with more scopes) from "your account
-  role lacks this permission".
+  role lacks this permission". **Implemented (Phase 4):** Cloudflare's 403 body does not say which
+  is at fault, so FlareADM does not guess. When the request used an OAuth credential it appends a
+  note naming both possibilities and how to check: `flareadm auth status` shows the granted scopes,
+  and `flareadm auth login --all-scopes` re-logs in with more. API-token credentials get no note.
 - **Q10 (risk): public-client irreversibility.** If the project ever registers a client, the
   public/private choice is a one-way door (E1) — decide deliberately.
 - **Q11 (risk): plaintext store.** Same exposure as Wrangler's default (E4), but users may expect

@@ -33,11 +33,17 @@ api_token_env = "CLOUDFLARE_API_TOKEN"
 account_id = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 api_token_env = "CF_PERSONAL_TOKEN"
 default_zone = "example.com"
+oauth_client_id = "0123456789abcdef0123456789abcdef"
 
 [profile.company]
 account_id = "cccccccccccccccccccccccccccccccc"
 api_token_env = "CF_COMPANY_TOKEN"
 ```
+
+Each profile supports four keys: `account_id`, `api_token_env`, `default_zone` and
+`oauth_client_id` (the OAuth client used by [`auth login`](#oauth-credentials)). They are read and
+written by `configure get`/`set`/`list` and by `profile create`/`update` (`--account-id`,
+`--api-token-env`, `--default-zone`, `--oauth-client-id`).
 
 Usage:
 
@@ -84,7 +90,8 @@ loopback redirect URI
 http://127.0.0.1:8976/oauth/callback
 ```
 
-Provide the client id with `--client-id`, or set `oauth_client_id` in the profile.
+Provide the client id with `--client-id`, or set `oauth_client_id` in the profile (equivalently
+`configure set oauth_client_id …`, or `profile create`/`update --oauth-client-id`).
 
 Login flags:
 
