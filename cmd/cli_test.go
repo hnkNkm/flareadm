@@ -9340,12 +9340,17 @@ func (l *lockedBuffer) String() string {
 // the loopback callback plus token and revocation endpoints. No live network is
 // involved.
 type oauthStub struct {
-	server        *httptest.Server
-	mu            sync.Mutex
-	forms         []url.Values
-	deny          bool
-	rejectRev     bool
-	rejectRefresh bool
+	server               *httptest.Server
+	mu                   sync.Mutex
+	forms                []url.Values
+	deny                 bool
+	rejectRev            bool
+	rejectRefresh        bool
+	authorizeError       string
+	authorizeDescription string
+	tokenError           string
+	tokenDescription     string
+	echoCodeInError      bool
 }
 
 func newOAuthStub(t *testing.T) *oauthStub {
@@ -9359,10 +9364,20 @@ func newOAuthStub(t *testing.T) *oauthStub {
 			http.Error(w, "bad redirect_uri", http.StatusBadRequest)
 			return
 		}
+		s.mu.Lock()
+		authErr, authErrDesc := s.authorizeError, s.authorizeDescription
+		deny := s.deny
+		s.mu.Unlock()
 		next := redirect.Query()
-		if s.deny {
+		switch {
+		case authErr != "":
+			next.Set("error", authErr)
+			if authErrDesc != "" {
+				next.Set("error_description", authErrDesc)
+			}
+		case deny:
 			next.Set("error", "access_denied")
-		} else {
+		default:
 			next.Set("code", "cli-auth-code")
 		}
 		next.Set("state", q.Get("state"))
@@ -9374,7 +9389,21 @@ func newOAuthStub(t *testing.T) *oauthStub {
 		s.mu.Lock()
 		s.forms = append(s.forms, r.PostForm)
 		reject := s.rejectRefresh && r.PostForm.Get("grant_type") == "refresh_token"
+		tokErr, tokErrDesc, echoCode := s.tokenError, s.tokenDescription, s.echoCodeInError
 		s.mu.Unlock()
+		if echoCode {
+			tokErrDesc += " (code " + r.PostForm.Get("code") + ")"
+		}
+		if tokErr != "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			payload := map[string]string{"error": tokErr}
+			if tokErrDesc != "" {
+				payload["error_description"] = tokErrDesc
+			}
+			_ = json.NewEncoder(w).Encode(payload)
+			return
+		}
 		if reject {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
@@ -10291,5 +10320,129 @@ func TestStoreBackedRefreshFailureDoesNotHang(t *testing.T) {
 	}
 	if elapsed > 10*time.Second {
 		t.Fatalf("refresh failure took %s; it must not hang", elapsed)
+	}
+}
+
+// runLoginWithBrowser drives one CLI login end to end against the stub: it
+// starts the command, plays the browser against the printed authorize URL and
+// returns stdout, stderr and the exit code.
+func runLoginWithBrowser(t *testing.T, extra ...string) (string, string, int) {
+	t.Helper()
+	port := freePort(t)
+	out, errOut := &lockedBuffer{}, &lockedBuffer{}
+	args := append([]string{"auth", "login", "--client-id", "cli-client", "--no-browser",
+		"--callback-port", strconv.Itoa(port), "--timeout", "10s"}, extra...)
+	done := make(chan int, 1)
+	go func() {
+		done <- Run(context.Background(), args, strings.NewReader(""), out, errOut)
+	}()
+	authorize := waitForLine(t, out)
+	resp, err := http.Get(authorize) //nolint:gosec // loopback test URL
+	if err == nil {
+		_ = resp.Body.Close()
+	}
+	code := <-done
+	return out.String(), errOut.String(), code
+}
+
+// TestOAuthLoginFailureMessages checks that every OAuth failure surfaces the
+// error code and Cloudflare's description, with remediation that matches the
+// actual problem: scope rejections talk about scopes, client/redirect problems
+// name the redirect URI and never mention --scopes.
+func TestOAuthLoginFailureMessages(t *testing.T) {
+	cases := []struct {
+		name          string
+		authorize     [2]string // code, description
+		token         [2]string // code, description
+		wantCode      string
+		wantSnippets  []string
+		deniedSnippet string
+	}{
+		{
+			name:          "authorize invalid_scope",
+			authorize:     [2]string{"invalid_scope", "scope not allowed for this client"},
+			wantCode:      "invalid_scope",
+			wantSnippets:  []string{"invalid_scope", "scope not allowed for this client", "--scopes", "requested: ", "Manage Account > OAuth clients"},
+			deniedSnippet: "compare the redirect URI",
+		},
+		{
+			name:          "authorize unauthorized_client",
+			authorize:     [2]string{"unauthorized_client", "client not found"},
+			wantCode:      "unauthorized_client",
+			wantSnippets:  []string{"unauthorized_client", "client not found", "redirect URI http://127.0.0.1:", "/oauth/callback", "registered redirect URL"},
+			deniedSnippet: "--scopes",
+		},
+		{
+			name:          "token invalid_grant",
+			token:         [2]string{"invalid_grant", "authorization code expired"},
+			wantCode:      "invalid_grant",
+			wantSnippets:  []string{"invalid_grant", "authorization code expired", "auth login", "single use"},
+			deniedSnippet: "--scopes",
+		},
+		{
+			name:          "unknown error code",
+			authorize:     [2]string{"teapot_error", "unexpected server failure"},
+			wantCode:      "teapot_error",
+			wantSnippets:  []string{"teapot_error", "unexpected server failure", "Manage Account > OAuth clients"},
+			deniedSnippet: "--scopes",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := newOAuthStub(t)
+			stub.apply(t)
+			newHome(t)
+			t.Setenv("FLAREADM_API_TOKEN", "")
+			stub.mu.Lock()
+			stub.authorizeError, stub.authorizeDescription = tc.authorize[0], tc.authorize[1]
+			stub.tokenError, stub.tokenDescription = tc.token[0], tc.token[1]
+			stub.mu.Unlock()
+
+			stdout, stderr, code := runLoginWithBrowser(t)
+			if code != errors.CodeAuth {
+				t.Fatalf("exit code = %d, want 3 (stderr=%q)", code, stderr)
+			}
+			for _, want := range tc.wantSnippets {
+				if !strings.Contains(stderr, want) {
+					t.Fatalf("stderr missing %q:\n%s", want, stderr)
+				}
+			}
+			if tc.deniedSnippet != "" && strings.Contains(stderr, tc.deniedSnippet) {
+				t.Fatalf("stderr must not contain %q for this failure:\n%s", tc.deniedSnippet, stderr)
+			}
+			for _, secret := range []string{"cli-access-token", "cli-refresh-token", "cli-auth-code"} {
+				if strings.Contains(stderr, secret) || strings.Contains(stdout, secret) {
+					t.Fatalf("credential material %q leaked:\nstdout=%s\nstderr=%s", secret, stdout, stderr)
+				}
+			}
+		})
+	}
+}
+
+// TestOAuthLoginTokenErrorRedactsEchoedCode: even a server error description
+// that echoes the authorization code must not reach the terminal.
+func TestOAuthLoginTokenErrorRedactsEchoedCode(t *testing.T) {
+	stub := newOAuthStub(t)
+	stub.apply(t)
+	newHome(t)
+	t.Setenv("FLAREADM_API_TOKEN", "")
+	stub.mu.Lock()
+	stub.tokenError = "invalid_grant"
+	stub.tokenDescription = "code rejected"
+	stub.echoCodeInError = true
+	stub.mu.Unlock()
+
+	stdout, stderr, code := runLoginWithBrowser(t)
+	if code != errors.CodeAuth {
+		t.Fatalf("exit code = %d, want 3 (stderr=%q)", code, stderr)
+	}
+	if !strings.Contains(stderr, "invalid_grant") || !strings.Contains(stderr, "code rejected") {
+		t.Fatalf("stderr lost the error detail: %q", stderr)
+	}
+	if strings.Contains(stderr, "cli-auth-code") || strings.Contains(stdout, "cli-auth-code") {
+		t.Fatalf("the authorization code leaked back through the error description:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, "[REDACTED]") {
+		t.Fatalf("expected the echoed code to be redacted: %q", stderr)
 	}
 }

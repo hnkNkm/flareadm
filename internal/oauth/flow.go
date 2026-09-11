@@ -156,7 +156,8 @@ func Login(ctx context.Context, opts LoginOptions) (Credential, error) {
 
 	codeCh := make(chan string, 1)
 	failureCh := make(chan error, 1)
-	server := &http.Server{Handler: callbackHandler(state, codeCh, failureCh), ReadHeaderTimeout: 10 * time.Second}
+	fc := failureContext{Stage: "authorization request", Scopes: WithOfflineScopes(opts.Scopes), RedirectURI: redirectURI, ClientID: opts.ClientID}
+	server := &http.Server{Handler: callbackHandler(state, fc, codeCh, failureCh), ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = server.Serve(listener) }()
 	defer func() { _ = server.Close() }()
 
@@ -247,9 +248,71 @@ func WithOfflineScopes(scopes []string) []string {
 	return out
 }
 
+// failureContext describes the request an OAuth error came from, so the
+// remediation can name the concrete values the user has to compare (a scope
+// list, the redirect URI) instead of generic advice.
+type failureContext struct {
+	Stage       string
+	Scopes      []string
+	RedirectURI string
+	ClientID    string
+}
+
+// oauthFailure renders an actionable exit-3 error for an OAuth error response:
+// the error code and Cloudflare's description are always included, followed by
+// a remediation chosen per code. Scope problems point at --scopes; client and
+// redirect problems name the redirect URI and never mention --scopes.
+func oauthFailure(fc failureContext, code, description, uri string) error {
+	var b strings.Builder
+	stage := fc.Stage
+	if stage == "" {
+		stage = "request"
+	}
+	fmt.Fprintf(&b, "OAuth %s was rejected: %s", stage, code)
+	if description != "" {
+		fmt.Fprintf(&b, " — %s", description)
+	}
+	if uri != "" {
+		fmt.Fprintf(&b, " (see %s)", uri)
+	}
+	b.WriteString("\n")
+	switch code {
+	case "invalid_scope":
+		b.WriteString("the requested scope set was not accepted")
+		if len(fc.Scopes) > 0 {
+			fmt.Fprintf(&b, " (requested: %s)", strings.Join(fc.Scopes, " "))
+		}
+		b.WriteString(". Retry with an explicit list, for example 'flareadm auth login --scopes account:read,zone:read', and check which scopes the client is registered for in the Cloudflare dashboard (Manage Account > OAuth clients).")
+	case "unauthorized_client", "invalid_client":
+		b.WriteString("the client was rejected")
+		if fc.RedirectURI != "" {
+			fmt.Fprintf(&b, "; this login used the redirect URI %s", fc.RedirectURI)
+		}
+		b.WriteString(". Check --client-id (and the profile's oauth_client_id) and compare the redirect URI above with the client's registered redirect URL in the Cloudflare dashboard (Manage Account > OAuth clients).")
+	case "invalid_request":
+		b.WriteString("the request was rejected as malformed")
+		if fc.RedirectURI != "" {
+			fmt.Fprintf(&b, "; this login used the redirect URI %s", fc.RedirectURI)
+		}
+		b.WriteString(". A redirect URI that does not match the registered one causes this; compare it with the client's registered redirect URL in the Cloudflare dashboard (Manage Account > OAuth clients).")
+	case "invalid_grant":
+		b.WriteString("the authorization code or refresh token was rejected; both are single use and short lived. Run 'flareadm auth login' again to start a fresh login.")
+	case "access_denied":
+		b.WriteString("the consent screen was declined, or the client is not authorized for this account; a private client can only be authorized by members of its parent Cloudflare account. Re-run 'flareadm auth login' to try again.")
+	default:
+		if fc.RedirectURI != "" {
+			fmt.Fprintf(&b, "this login used the redirect URI %s and client id %s; compare both with the client's registration in the Cloudflare dashboard (Manage Account > OAuth clients), then run 'flareadm auth login' again.",
+				fc.RedirectURI, orDefault(fc.ClientID, "(unset)"))
+		} else {
+			b.WriteString("run 'flareadm auth login' again; if it persists, check the OAuth client registration in the Cloudflare dashboard (Manage Account > OAuth clients).")
+		}
+	}
+	return errors.New(errors.CodeAuth, "%s", b.String())
+}
+
 // callbackHandler accepts exactly one callback request, forwards the code, and
 // answers the browser with a short page.
-func callbackHandler(state string, codeCh chan<- string, failureCh chan<- error) http.Handler {
+func callbackHandler(state string, fc failureContext, codeCh chan<- string, failureCh chan<- error) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != CallbackPath {
 			http.NotFound(w, r)
@@ -257,13 +320,9 @@ func callbackHandler(state string, codeCh chan<- string, failureCh chan<- error)
 		}
 		query := r.URL.Query()
 		if errParam := query.Get("error"); errParam != "" {
-			desc := query.Get("error_description")
-			msg := "the OAuth login was not completed: " + errParam
-			if desc != "" {
-				msg += " (" + desc + ")"
-			}
-			writeCallbackPage(w, "Login failed", msg)
-			failureCh <- errors.New(errors.CodeAuth, "%s", msg)
+			msg := oauthFailure(fc, errParam, query.Get("error_description"), query.Get("error_uri"))
+			writeCallbackPage(w, "Login failed", msg.Error())
+			failureCh <- msg
 			return
 		}
 		if got := query.Get("state"); got != state {
@@ -275,7 +334,8 @@ func callbackHandler(state string, codeCh chan<- string, failureCh chan<- error)
 		code := query.Get("code")
 		if code == "" {
 			writeCallbackPage(w, "Login failed", "No authorization code was returned.")
-			failureCh <- errors.New(errors.CodeAuth, "the OAuth callback did not include an authorization code")
+			failureCh <- errors.New(errors.CodeAuth,
+				"the OAuth callback did not include an authorization code, so the login was not completed\nrun 'flareadm auth login' again to retry")
 			return
 		}
 		writeCallbackPage(w, "Login complete", "You can close this tab and return to the terminal.")
@@ -338,12 +398,14 @@ func exchangeCode(ctx context.Context, opts LoginOptions, code, redirectURI, ver
 	if err != nil {
 		return Credential{}, err
 	}
-	token, err := decodeTokenResponse(resp)
+	fc := failureContext{Stage: "token request", Scopes: WithOfflineScopes(opts.Scopes), RedirectURI: redirectURI, ClientID: opts.ClientID}
+	token, err := decodeTokenResponse(resp, fc)
 	if err != nil {
 		return Credential{}, err
 	}
 	if token.AccessToken == "" {
-		return Credential{}, errors.New(errors.CodeAuth, "the token endpoint returned no access token")
+		return Credential{}, errors.New(errors.CodeAuth,
+			"the OAuth token request returned no access token\nrun 'flareadm auth login' again; if it persists, check the OAuth client registration in the Cloudflare dashboard (Manage Account > OAuth clients)")
 	}
 	protect(token.AccessToken)
 	protect(token.RefreshToken)
@@ -402,12 +464,13 @@ func Refresh(ctx context.Context, opts RefreshOptions) (Credential, error) {
 	if err != nil {
 		return Credential{}, err
 	}
-	token, err := decodeTokenResponse(resp)
+	token, err := decodeTokenResponse(resp, failureContext{Stage: "refresh request", Scopes: opts.Credential.Scopes, ClientID: opts.ClientID})
 	if err != nil {
 		return Credential{}, err
 	}
 	if token.AccessToken == "" {
-		return Credential{}, errors.New(errors.CodeAuth, "the token endpoint returned no access token")
+		return Credential{}, errors.New(errors.CodeAuth,
+			"the OAuth refresh returned no access token\nrun 'flareadm auth login' again to sign in")
 	}
 	protect(token.AccessToken)
 	protect(token.RefreshToken)
@@ -445,9 +508,20 @@ func Revoke(ctx context.Context, opts RevokeOptions) error {
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	_, _ = io.Copy(io.Discard, resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 400 {
-		return errors.New(errors.CodeAuth, "the revocation endpoint rejected the request (HTTP %d)", resp.StatusCode)
+		var oauthErr struct {
+			Error       string `json:"error"`
+			Description string `json:"error_description"`
+			URI         string `json:"error_uri"`
+		}
+		_ = json.Unmarshal(body, &oauthErr)
+		if oauthErr.Error != "" {
+			return oauthFailure(failureContext{Stage: "revocation request"}, oauthErr.Error, oauthErr.Description, oauthErr.URI)
+		}
+		return errors.New(errors.CodeAuth,
+			"the OAuth revocation request failed with HTTP %d\nretry 'flareadm auth logout'; if it persists the credential may already be revoked, in which case retry with --local",
+			resp.StatusCode)
 	}
 	return nil
 }
@@ -474,7 +548,7 @@ func postForm(ctx context.Context, client *http.Client, endpoint string, form ur
 
 // decodeTokenResponse reads a token endpoint response, mapping OAuth errors to
 // exit code 3 with the server's error code in the message.
-func decodeTokenResponse(resp *http.Response) (tokenResponse, error) {
+func decodeTokenResponse(resp *http.Response, fc failureContext) (tokenResponse, error) {
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
@@ -484,16 +558,21 @@ func decodeTokenResponse(resp *http.Response) (tokenResponse, error) {
 		var oauthErr struct {
 			Error       string `json:"error"`
 			Description string `json:"error_description"`
+			URI         string `json:"error_uri"`
 		}
 		_ = json.Unmarshal(body, &oauthErr)
 		if oauthErr.Error != "" {
-			msg := "the OAuth token endpoint rejected the request: " + oauthErr.Error
-			if oauthErr.Description != "" {
-				msg += " (" + oauthErr.Description + ")"
-			}
-			return tokenResponse{}, errors.New(errors.CodeAuth, "%s", msg)
+			return tokenResponse{}, oauthFailure(fc, oauthErr.Error, oauthErr.Description, oauthErr.URI)
 		}
-		return tokenResponse{}, errors.New(errors.CodeAuth, "the OAuth token endpoint failed (HTTP %d)", resp.StatusCode)
+		stage := fc.Stage
+		if stage == "" {
+			stage = "token request"
+		}
+		msg := fmt.Sprintf("the OAuth %s failed with HTTP %d and no error code", stage, resp.StatusCode)
+		if fc.RedirectURI != "" {
+			msg += fmt.Sprintf("\nthis login used the redirect URI %s; compare it with the client's registered redirect URL (Cloudflare dashboard: Manage Account > OAuth clients)", fc.RedirectURI)
+		}
+		return tokenResponse{}, errors.New(errors.CodeAuth, "%s", msg)
 	}
 	var token tokenResponse
 	if err := json.Unmarshal(body, &token); err != nil {
