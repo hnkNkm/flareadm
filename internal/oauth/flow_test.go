@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -475,5 +476,218 @@ func TestRefreshRotationRaceKeepsValidToken(t *testing.T) {
 		ClientID: last.ClientID, Credential: last, Endpoints: fake.endpoints(),
 	}); err != nil {
 		t.Fatalf("refresh with the surviving token failed: %v", err)
+	}
+}
+
+// ---- browser handoff (opener selection and fallbacks) ----------------------
+
+func TestBrowserCandidatesPerOS(t *testing.T) {
+	cases := []struct {
+		goos string
+		want []string
+		args [][]string
+	}{
+		{"linux", []string{"xdg-open", "wslview"}, [][]string{nil, nil}},
+		{"darwin", []string{"open"}, [][]string{nil}},
+		{"windows", []string{"rundll32"}, [][]string{{"url.dll,FileProtocolHandler"}}},
+	}
+	for _, tc := range cases {
+		got := browserCandidates(tc.goos)
+		if len(got) != len(tc.want) {
+			t.Fatalf("%s: %d candidates, want %d", tc.goos, len(got), len(tc.want))
+		}
+		for i, want := range tc.want {
+			if got[i].Name != want {
+				t.Fatalf("%s candidate %d = %q, want %q", tc.goos, i, got[i].Name, want)
+			}
+			if strings.Join(got[i].Args, " ") != strings.Join(tc.args[i], " ") {
+				t.Fatalf("%s candidate %d args = %v, want %v", tc.goos, i, got[i].Args, tc.args[i])
+			}
+		}
+		// The URL is never baked into a candidate: it is appended as an
+		// argument, so nothing can be interpreted by a shell.
+		for _, c := range got {
+			for _, a := range c.Args {
+				if strings.Contains(a, "://") {
+					t.Fatalf("%s candidate carries a URL in its arguments: %v", tc.goos, c)
+				}
+			}
+		}
+	}
+}
+
+// withFakeOpener swaps the process seam for the duration of a test.
+func withFakeOpener(t *testing.T, fn func(browserCandidate, string) error) {
+	t.Helper()
+	original := startOpener
+	startOpener = fn
+	t.Cleanup(func() { startOpener = original })
+}
+
+func TestOpenInBrowserFallsBackToNextCandidate(t *testing.T) {
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+		t.Skip("the fallback chain exists on the xdg-open platforms")
+	}
+	var tried []string
+	withFakeOpener(t, func(c browserCandidate, target string) error {
+		tried = append(tried, c.Name)
+		if c.Name == "xdg-open" {
+			return fmt.Errorf("xdg-open failed: exit status 3")
+		}
+		if !strings.HasPrefix(target, "http") {
+			t.Fatalf("target %q is not a URL", target)
+		}
+		return nil
+	})
+	if err := openInBrowser("https://dash.cloudflare.com/oauth2/auth?x=1"); err != nil {
+		t.Fatalf("openInBrowser: %v", err)
+	}
+	if strings.Join(tried, ",") != "xdg-open,wslview" {
+		t.Fatalf("tried %v, want xdg-open then wslview", tried)
+	}
+}
+
+func TestOpenInBrowserReportsWhenEveryCandidateFails(t *testing.T) {
+	withFakeOpener(t, func(c browserCandidate, target string) error {
+		return fmt.Errorf("%s failed: not found", c.Name)
+	})
+	err := openInBrowser("https://example.test/auth")
+	if err == nil {
+		t.Fatal("expected an error when no opener works")
+	}
+	if !strings.Contains(err.Error(), "no browser opener worked") {
+		t.Fatalf("error = %v", err)
+	}
+	for _, name := range []string{"xdg-open", "wslview", "open", "rundll32"} {
+		// Only the candidates for this platform are reported; at least one name
+		// must appear.
+		if strings.Contains(err.Error(), name) {
+			return
+		}
+	}
+	t.Fatalf("error names no candidate: %v", err)
+}
+
+// TestLoginKeepsWaitingWhenBrowserCannotOpen covers the fallback contract: the
+// URL is printed exactly once with a clear message and the login still
+// completes when the callback arrives.
+func TestLoginKeepsWaitingWhenBrowserCannotOpen(t *testing.T) {
+	fake := newFakeOAuth(t)
+	var printed syncBuffer
+	done := make(chan error, 1)
+	go func() {
+		_, err := Login(context.Background(), LoginOptions{
+			ClientID: "client-123", CallbackHost: "127.0.0.1", CallbackPort: 0,
+			OpenBrowser: true, Timeout: 10 * time.Second,
+			Endpoints: fake.endpoints(), Out: &printed,
+			OpenURL: func(string) error { return fmt.Errorf("no browser opener worked (xdg-open failed: not found)") },
+		})
+		done <- err
+	}()
+	url := waitForAuthorizeURL(t, &printed)
+	if n := countURLs(printed.String()); n != 1 {
+		t.Fatalf("printed %d URL lines, want exactly 1:\n%s", n, printed.String())
+	}
+	if !strings.Contains(printed.String(), "could not open a browser automatically") {
+		t.Fatalf("fallback message missing:\n%s", printed.String())
+	}
+	browser(t, url)
+	if err := <-done; err != nil {
+		t.Fatalf("login should still succeed: %v", err)
+	}
+}
+
+// TestLoginPrintsNothingWhenBrowserOpens keeps the successful handoff quiet.
+func TestLoginPrintsNothingWhenBrowserOpens(t *testing.T) {
+	fake := newFakeOAuth(t)
+	var printed syncBuffer
+	openerCalled := false
+	done := make(chan error, 1)
+	go func() {
+		_, err := Login(context.Background(), LoginOptions{
+			ClientID: "client-123", CallbackHost: "127.0.0.1", CallbackPort: 0,
+			OpenBrowser: true, Timeout: 10 * time.Second,
+			Endpoints: fake.endpoints(), Out: &printed,
+			OpenURL: func(target string) error {
+				openerCalled = true
+				go browser(t, target)
+				return nil
+			},
+		})
+		done <- err
+	}()
+	if err := <-done; err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	if !openerCalled {
+		t.Fatal("the opener was not used")
+	}
+	if strings.TrimSpace(printed.String()) != "" {
+		t.Fatalf("a successful handoff must not print the URL:\n%s", printed.String())
+	}
+}
+
+// countURLs counts printed lines that start with a URL.
+func countURLs(output string) int {
+	n := 0
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "http") {
+			n++
+		}
+	}
+	return n
+}
+
+// TestStartOpenerNonZeroExitIsFailure pins the process seam: a quick non-zero
+// exit is a failed candidate, a successful run is not.
+func TestStartOpenerNonZeroExitIsFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses the POSIX shell as a stand-in opener")
+	}
+	if err := startOpener(browserCandidate{Name: "sh", Args: []string{"-c", "exit 3"}}, "https://example.test/"); err == nil {
+		t.Fatal("a non-zero exit must report failure")
+	}
+	if err := startOpener(browserCandidate{Name: "sh", Args: []string{"-c", "true"}}, "https://example.test/"); err != nil {
+		t.Fatalf("a successful opener must not report failure: %v", err)
+	}
+	if err := startOpener(browserCandidate{Name: "definitely-not-a-real-opener-xyz"}, "https://example.test/"); err == nil {
+		t.Fatal("a missing opener must report failure")
+	}
+}
+
+// TestBrowserCandidatesFromEnv: an explicit $BROWSER replaces the platform
+// chain (arguments allowed, no shell involved).
+func TestBrowserCandidatesFromEnv(t *testing.T) {
+	got := browserCandidatesFor("linux", "wslview --verbose")
+	if len(got) != 1 || got[0].Name != "wslview" || strings.Join(got[0].Args, " ") != "--verbose" {
+		t.Fatalf("BROWSER candidate = %+v", got)
+	}
+	if got := browserCandidatesFor("linux", ""); len(got) != 2 || got[0].Name != "xdg-open" {
+		t.Fatalf("empty BROWSER must use the platform chain: %+v", got)
+	}
+}
+
+// TestLoginWithFailedOpenerTimesOutWithNetworkError: the fallback must keep the
+// documented exit code (8) and print the URL exactly once.
+func TestLoginWithFailedOpenerTimesOutWithNetworkError(t *testing.T) {
+	fake := newFakeOAuth(t)
+	var printed syncBuffer
+	_, err := Login(context.Background(), LoginOptions{
+		ClientID: "client-123", CallbackHost: "127.0.0.1", CallbackPort: 0,
+		OpenBrowser: true, Timeout: 300 * time.Millisecond,
+		Endpoints: fake.endpoints(), Out: &printed,
+		OpenURL: func(string) error { return fmt.Errorf("no browser opener worked (xdg-open failed: not found)") },
+	})
+	if err == nil {
+		t.Fatal("expected a timeout error")
+	}
+	if code := exitCode(err); code != 8 {
+		t.Fatalf("exit code = %d, want 8 (%v)", code, err)
+	}
+	if n := countURLs(printed.String()); n != 1 {
+		t.Fatalf("printed %d URL lines, want exactly 1:\n%s", n, printed.String())
+	}
+	if !strings.Contains(printed.String(), "could not open a browser automatically") {
+		t.Fatalf("fallback message missing:\n%s", printed.String())
 	}
 }

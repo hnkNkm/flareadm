@@ -10446,3 +10446,30 @@ func TestOAuthLoginTokenErrorRedactsEchoedCode(t *testing.T) {
 		t.Fatalf("expected the echoed code to be redacted: %q", stderr)
 	}
 }
+
+// TestOAuthLoginBrowserPathRequiresTerminalAtCLILevel pins the CLI-level rule:
+// the browser path is interactive-only, so a piped stdin exits 2 before any
+// opener runs and prints nothing. The fallback behaviour itself (URL printed
+// once, waiting continues, timeout exit 8) is covered by the flow tests, which
+// can drive the browser path without a TTY.
+func TestOAuthLoginBrowserPathRequiresTerminalAtCLILevel(t *testing.T) {
+	stub := newOAuthStub(t)
+	stub.apply(t)
+	newHome(t)
+	t.Setenv("FLAREADM_API_TOKEN", "")
+	t.Setenv("BROWSER", "definitely-not-a-real-browser-xyz")
+
+	res := runCLI(t, "auth", "login", "--client-id", "cli-client")
+	if res.code != errors.CodeInvalid {
+		t.Fatalf("code=%d, want 2 (stderr=%q)", res.code, res.stderr)
+	}
+	if strings.Contains(res.stdout, "http") {
+		t.Fatalf("the authorize URL must not be printed when the login cannot proceed: %q", res.stdout)
+	}
+	stub.mu.Lock()
+	requests := len(stub.forms)
+	stub.mu.Unlock()
+	if requests != 0 {
+		t.Fatalf("no token request may happen: %d", requests)
+	}
+}

@@ -551,8 +551,8 @@ func RenderGet[T any](rt *Runtime, res *cloudflare.GetResult[T], headers []strin
 	return rt.Printer().Emit(res.Item)
 }
 
-// writerIsTerminal reports whether w is a character device (an interactive
-// terminal). Non-file writers (pipes, buffers) are not terminals.
+// writerIsTerminal reports whether w is an interactive terminal. Non-file
+// writers (pipes, buffers) are never terminals.
 func writerIsTerminal(w io.Writer) bool {
 	f, ok := w.(*os.File)
 	if !ok {
@@ -569,10 +569,8 @@ func readerIsTerminal(r io.Reader) bool {
 	return fileIsTTY(f)
 }
 
-func fileIsTTY(f *os.File) bool {
-	st, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return st.Mode()&os.ModeCharDevice != 0
-}
+// fileIsTTY delegates to the platform check (termios ioctl on unix,
+// GetConsoleMode on Windows). os.ModeCharDevice is not enough: /dev/null is a
+// character device but not a terminal, and treating it as interactive made
+// `auth login </dev/null` wait for the full timeout instead of failing fast.
+func fileIsTTY(f *os.File) bool { return isTerminal(f) }

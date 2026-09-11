@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
@@ -166,8 +167,13 @@ func Login(ctx context.Context, opts LoginOptions) (Credential, error) {
 		if opener == nil {
 			opener = openInBrowser
 		}
+		// Opening a browser is best effort: a missing or failing opener must
+		// never break the login, so the URL is printed exactly once and the
+		// flow keeps waiting for the loopback callback until the timeout.
 		if err := opener(authorizeURL); err != nil && opts.Out != nil {
-			_, _ = fmt.Fprintf(opts.Out, "Could not open a browser (%v). Open this URL to continue:\n%s\n", err, authorizeURL)
+			_, _ = fmt.Fprintf(opts.Out,
+				"could not open a browser automatically (%v); open this URL to finish the login:\n%s\n",
+				err, authorizeURL)
 		}
 	} else if opts.Out != nil {
 		_, _ = fmt.Fprintln(opts.Out, authorizeURL)
@@ -361,26 +367,86 @@ func htmlEscape(s string) string {
 	return replacer.Replace(s)
 }
 
-// openInBrowser launches the platform's URL opener. Failures are reported to
-// the caller, which falls back to printing the URL.
-func openInBrowser(target string) error {
-	var name string
-	var args []string
-	switch runtime.GOOS {
+// browserCandidate is one way to open a URL on a platform. The URL is always
+// appended as an argument: nothing is ever passed through a shell, so a URL
+// containing shell metacharacters cannot be interpreted.
+type browserCandidate struct {
+	Name string
+	Args []string
+}
+
+// browserCandidates lists the openers to try, in order, for a GOOS.
+//
+//   - darwin: `open` (the documented URL opener).
+//   - windows: rundll32 with url.dll,FileProtocolHandler, which Microsoft
+//     documents for opening a protocol/URL. `cmd /c start` is deliberately not
+//     used: it needs a shell and hand-built quoting.
+//   - everything else: `xdg-open` (freedesktop), then `wslview` (wslu), which is
+//     what a WSL distribution without WSLg has available.
+func browserCandidates(goos string) []browserCandidate {
+	switch goos {
 	case "darwin":
-		name = "open"
+		return []browserCandidate{{Name: "open"}}
 	case "windows":
-		name, args = "rundll32", []string{"url.dll,FileProtocolHandler"}
+		return []browserCandidate{{Name: "rundll32", Args: []string{"url.dll,FileProtocolHandler"}}}
 	default:
-		name = "xdg-open"
+		return []browserCandidate{{Name: "xdg-open"}, {Name: "wslview"}}
 	}
-	args = append(args, target)
-	cmd := exec.Command(name, args...)
+}
+
+// openerGrace bounds how long a freshly started opener is watched for an
+// immediate failure. An opener still running after the grace period is assumed
+// to be working and is left in the background, so the login never blocks on it.
+const openerGrace = 3 * time.Second
+
+// startOpener is the process seam: it starts one candidate and reports whether
+// it looks like it worked (a start failure or a quick non-zero exit means it
+// did not). Tests replace it to exercise the fallbacks deterministically.
+var startOpener = func(candidate browserCandidate, target string) error {
+	args := append(append([]string{}, candidate.Args...), target)
+	cmd := exec.Command(candidate.Name, args...)
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	go func() { _ = cmd.Wait() }()
-	return nil
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("%s failed: %w", candidate.Name, err)
+		}
+		return nil
+	case <-time.After(openerGrace):
+		// Still running: assume it opened something. Do not wait for it.
+		return nil
+	}
+}
+
+// browserCandidatesFor resolves the openers to try: an explicit $BROWSER wins
+// (the conventional override, and the reason WSL and headless users can point
+// the CLI at wslview or a custom script), otherwise the platform chain is used.
+// A $BROWSER value may carry arguments, split on whitespace; nothing is passed
+// through a shell.
+func browserCandidatesFor(goos, browserEnv string) []browserCandidate {
+	if fields := strings.Fields(browserEnv); len(fields) > 0 {
+		return []browserCandidate{{Name: fields[0], Args: fields[1:]}}
+	}
+	return browserCandidates(goos)
+}
+
+// openInBrowser tries each opener in order and reports an error only when every
+// candidate failed, so the caller can print the URL instead of failing the
+// login.
+func openInBrowser(target string) error {
+	var failures []string
+	for _, candidate := range browserCandidatesFor(runtime.GOOS, os.Getenv("BROWSER")) {
+		if err := startOpener(candidate, target); err != nil {
+			failures = append(failures, err.Error())
+			continue
+		}
+		return nil
+	}
+	return fmt.Errorf("no browser opener worked (%s)", strings.Join(failures, "; "))
 }
 
 // exchangeCode performs the token request for an authorization code. No client
