@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/hnkNkm/flareadm/internal/auth"
@@ -65,11 +66,22 @@ type Runtime struct {
 	logger    *logging.Logger
 	client    *cloudflare.Client
 
+	// credentialKind records how the resolved credential was obtained and
+	// oauthTokenInUse the access token the current client was built with.
+	credentialKind  string
+	oauthTokenInUse string
+
 	stdinIsTTY  bool
 	stdoutIsTTY bool
 }
 
 // NewRuntime creates a Runtime bound to the process streams.
+// Credential kinds reported by CredentialKind.
+const (
+	credentialKindEnv   = "env"
+	credentialKindOAuth = "oauth"
+)
+
 func NewRuntime(in io.Reader, out, errOut io.Writer) *Runtime {
 	rt := &Runtime{
 		In:  in,
@@ -204,10 +216,92 @@ func (rt *Runtime) Credential() (auth.Credential, error) {
 	if err != nil {
 		return auth.Credential{}, err
 	}
+	var cred auth.Credential
 	if eff.Exists {
-		return auth.RequireWithOAuth(eff.Profile, rt.OAuthCredential)
+		cred, err = auth.RequireWithOAuth(eff.Profile, rt.OAuthCredential)
+	} else {
+		cred, err = auth.RequireWithOAuth(nil, rt.OAuthCredential)
 	}
-	return auth.RequireWithOAuth(nil, rt.OAuthCredential)
+	if err != nil {
+		return auth.Credential{}, err
+	}
+	rt.credentialKind = credentialKindEnv
+	if strings.HasPrefix(cred.Source, "oauth:") {
+		rt.credentialKind = credentialKindOAuth
+		rt.oauthTokenInUse = cred.Token
+	}
+	return cred, nil
+}
+
+// CredentialKind reports how the last resolved credential was obtained:
+// credentialKindEnv or credentialKindOAuth. It is empty before the first
+// resolution.
+func (rt *Runtime) CredentialKind() string { return rt.credentialKind }
+
+// IsOAuthCredential reports whether the resolved credential came from the
+// OAuth store (as opposed to an environment API token).
+func (rt *Runtime) IsOAuthCredential() bool { return rt.credentialKind == credentialKindOAuth }
+
+// PermissionHint returns the extra guidance appended to a 403 when the request
+// used an OAuth credential. Cloudflare's 403 body does not say whether the
+// granted scopes or the account role is at fault, so the hint states both
+// possibilities and points at the check that distinguishes them
+// (docs/oauth.md §13 Q9). It is empty for API-token credentials.
+func (rt *Runtime) PermissionHint() string {
+	if rt.credentialKind != credentialKindOAuth {
+		return ""
+	}
+	return "\nnote: this request used an OAuth credential. A 403 can mean the granted scopes do not cover " +
+		"this command, or that your Cloudflare account role lacks the permission; the API does not say which. " +
+		"Check the granted scopes with 'flareadm auth status'; if the scope is missing, re-run " +
+		"'flareadm auth login --all-scopes'."
+}
+
+// refreshStoredOAuth performs a forced refresh of the stored credential and
+// returns the new access token. A token rotated by a sibling process (or an
+// earlier retry) is reused instead of burning another refresh.
+func (rt *Runtime) refreshStoredOAuth(ctx context.Context) (string, error) {
+	profileName := rt.ActiveProfileName()
+	store := rt.OAuthStore()
+	cred, ok, err := store.Load(profileName)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", errors.New(errors.CodeAuth,
+			"no OAuth credential is stored for profile %q; run 'flareadm auth login'", profileName)
+	}
+	if cred.AccessToken != rt.oauthTokenInUse && cred.AccessToken != "" {
+		// A concurrent process already rotated: use its token.
+		rt.ProtectSecret(cred.AccessToken)
+		rt.oauthTokenInUse = cred.AccessToken
+		return cred.AccessToken, nil
+	}
+	clientID := cred.ClientID
+	if clientID == "" {
+		if eff, err := rt.ActiveProfile(); err == nil && eff.Exists {
+			clientID = eff.Profile.OAuthClientID
+		}
+	}
+	refreshed, err := oauth.Refresh(ctx, oauth.RefreshOptions{
+		ClientID:   clientID,
+		Credential: cred,
+		Endpoints:  oauth.EndpointsFromEnv(rt.Getenv),
+		Protect:    rt.ProtectSecret,
+	})
+	if err != nil {
+		if errors.CodeOf(err) == errors.CodeAuth {
+			return "", errors.New(errors.CodeAuth, "%s; run 'flareadm auth login' to sign in again", err)
+		}
+		return "", err
+	}
+	if err := store.Save(profileName, refreshed); err != nil {
+		return "", err
+	}
+	rt.ProtectSecret(refreshed.AccessToken)
+	rt.ProtectSecret(refreshed.RefreshToken)
+	rt.oauthTokenInUse = refreshed.AccessToken
+	return refreshed.AccessToken, nil
 }
 
 // OAuthStore returns the OAuth credential store, which lives beside the
@@ -307,13 +401,23 @@ func (rt *Runtime) CloudClient() (*cloudflare.Client, error) {
 		rt.logger.Infof("profile %q; token source: %s; endpoint: %s",
 			rt.ActiveProfileName(), cred.Source, endpointLabel(rt.EndpointURLFlag))
 	}
+	var refreshHook func(ctx context.Context) (string, error)
+	if rt.credentialKind == credentialKindOAuth {
+		// Only stored OAuth credentials can be refreshed (docs/oauth.md §9).
+		refreshHook = func(ctx context.Context) (string, error) {
+			ctx, cancel := context.WithTimeout(ctx, rt.oauthRequestTimeout())
+			defer cancel()
+			return rt.refreshStoredOAuth(ctx)
+		}
+	}
 	client, err := cloudflare.New(cloudflare.Options{
-		Token:    cred.Token,
-		Endpoint: rt.EndpointURLFlag,
-		Timeout:  rt.TimeoutFlag,
-		RawMode:  rt.RawFlag,
-		Policy:   rt.Policy(),
-		Logger:   rt.logger,
+		Token:        cred.Token,
+		Endpoint:     rt.EndpointURLFlag,
+		Timeout:      rt.TimeoutFlag,
+		RawMode:      rt.RawFlag,
+		Policy:       rt.Policy(),
+		Logger:       rt.logger,
+		RefreshToken: refreshHook,
 	})
 	if err != nil {
 		return nil, err

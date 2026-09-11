@@ -434,7 +434,7 @@ func TestConfigureAndProfileLifecycle(t *testing.T) {
 	if err := json.Unmarshal([]byte(res.stdout), &env); err != nil {
 		t.Fatalf("list json: %v", err)
 	}
-	if len(env.Data) != 4 {
+	if len(env.Data) != 5 {
 		t.Fatalf("rows = %d: %s", len(env.Data), res.stdout)
 	}
 
@@ -9340,11 +9340,12 @@ func (l *lockedBuffer) String() string {
 // the loopback callback plus token and revocation endpoints. No live network is
 // involved.
 type oauthStub struct {
-	server    *httptest.Server
-	mu        sync.Mutex
-	forms     []url.Values
-	deny      bool
-	rejectRev bool
+	server        *httptest.Server
+	mu            sync.Mutex
+	forms         []url.Values
+	deny          bool
+	rejectRev     bool
+	rejectRefresh bool
 }
 
 func newOAuthStub(t *testing.T) *oauthStub {
@@ -9372,7 +9373,14 @@ func newOAuthStub(t *testing.T) *oauthStub {
 		_ = r.ParseForm()
 		s.mu.Lock()
 		s.forms = append(s.forms, r.PostForm)
+		reject := s.rejectRefresh && r.PostForm.Get("grant_type") == "refresh_token"
 		s.mu.Unlock()
+		if reject {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"invalid_grant","error_description":"refresh token is not valid"}`))
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"access_token":  "cli-access-token",
@@ -10013,5 +10021,275 @@ func TestOAuthExpiredCredentialRefreshes(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "cli-refresh-token") {
 		t.Fatalf("rotated credential not persisted: %s", data)
+	}
+}
+
+// TestConfigureOAuthClientIDKey covers the oauth_client_id profile key end to
+// end: configure set/get/list, profile get/update and the config file.
+func TestConfigureOAuthClientIDKey(t *testing.T) {
+	newHome(t)
+	setToken(t, "tok")
+
+	if res := runCLI(t, "configure", "init"); res.code != 0 {
+		t.Fatalf("init: %d %s", res.code, res.stderr)
+	}
+	if res := runCLI(t, "configure", "set", "oauth_client_id", "client-abc"); res.code != 0 {
+		t.Fatalf("set oauth_client_id: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if res := runCLI(t, "configure", "get", "oauth_client_id"); res.code != 0 || res.stdout != "client-abc\n" {
+		t.Fatalf("get oauth_client_id: code=%d stdout=%q", res.code, res.stdout)
+	}
+	data, err := os.ReadFile(cfgPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `oauth_client_id = "client-abc"`) {
+		t.Fatalf("config file = %s", data)
+	}
+	res := runCLI(t, "configure", "list", "--json")
+	if res.code != 0 || !strings.Contains(res.stdout, "oauth_client_id") {
+		t.Fatalf("list: code=%d stdout=%q", res.code, res.stdout)
+	}
+
+	// The documented key list names it, both for unknown-key errors and help.
+	res = runCLI(t, "configure", "set", "nope", "x")
+	if res.code != errors.CodeInvalid || !strings.Contains(res.stderr, "oauth_client_id") {
+		t.Fatalf("unknown key message should list oauth_client_id: code=%d stderr=%q", res.code, res.stderr)
+	}
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"configure", "set", "--help"}, "oauth_client_id"},
+		{[]string{"configure", "get", "--help"}, "oauth_client_id"},
+		{[]string{"profile", "update", "--help"}, "--oauth-client-id"},
+	} {
+		res := runCLI(t, tc.args...)
+		if res.code != 0 || !strings.Contains(res.stdout, tc.want) {
+			t.Fatalf("%v help should mention %s: code=%d stdout=%q", tc.args, tc.want, res.code, res.stdout)
+		}
+	}
+
+	// profile get/update handle the key too.
+	if res := runCLI(t, "profile", "create", "work", "--oauth-client-id", "client-work"); res.code != 0 {
+		t.Fatalf("profile create: code=%d stderr=%q", res.code, res.stderr)
+	}
+	res = runCLI(t, "profile", "get", "work")
+	if res.code != 0 || !strings.Contains(res.stdout, "client-work") {
+		t.Fatalf("profile get: code=%d stdout=%q", res.code, res.stdout)
+	}
+	if res := runCLI(t, "profile", "update", "work", "--oauth-client-id", "client-work-2"); res.code != 0 {
+		t.Fatalf("profile update: code=%d stderr=%q", res.code, res.stderr)
+	}
+	res = runCLI(t, "profile", "get", "work", "--json")
+	if res.code != 0 || !strings.Contains(res.stdout, "client-work-2") {
+		t.Fatalf("profile get --json: code=%d stdout=%q", res.code, res.stdout)
+	}
+	// The key drives auth login's client-id fallback (no environment token).
+	t.Setenv("FLAREADM_API_TOKEN", "")
+	res = runCLI(t, "auth", "login", "--dry-run", "--profile", "work", "--no-browser")
+	if res.code != 0 || !strings.Contains(res.stdout, "Would start an OAuth login for profile work") {
+		t.Fatalf("login with the profile key: code=%d stdout=%q stderr=%q", res.code, res.stdout, res.stderr)
+	}
+}
+
+// ---- OAuth phases 3-4: refresh/expiry semantics, identity, 403 guidance ----
+
+// TestOAuthRefreshesOnceOnUnauthorized covers the 401 path and clock skew: the
+// stored credential is not expired locally, the API rejects the access token
+// anyway, the client refreshes once and retries exactly once.
+func TestOAuthRefreshesOnceOnUnauthorized(t *testing.T) {
+	stub := newOAuthStub(t)
+	stub.apply(t)
+	var apiCalls int
+	api := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		apiCalls++
+		if r.Auth == "Bearer cli-access-token" {
+			return 200, envelopeWithInfo([]any{map[string]any{"id": zoneID, "name": "example.com", "status": "active"}},
+				map[string]any{"page": float64(1), "per_page": float64(100), "count": float64(1), "total_count": float64(1), "total_pages": float64(1)})
+		}
+		s, b := apiErr(401, 1000, "Invalid access token")
+		return s, b
+	})
+	newHome(t)
+	t.Setenv("FLAREADM_API_TOKEN", "")
+	// Not inside the expiry window: no proactive refresh, so the first request
+	// carries the stored token and the 401 drives the refresh.
+	writeStoredCredential(t, "default", storedCredentialMap(time.Now().Add(30*time.Minute)))
+
+	res := runCLI(t, "zone", "list", "--endpoint-url", api.srv.URL)
+	if res.code != 0 {
+		t.Fatalf("401 retry: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if apiCalls != 2 {
+		t.Fatalf("API calls = %d, want exactly 2 (original + one retry)", apiCalls)
+	}
+	if form := stub.lastForm(t); form.Get("grant_type") != "refresh_token" {
+		t.Fatalf("expected a refresh, got %v", form)
+	}
+	if !strings.Contains(res.stdout, "example.com") {
+		t.Fatalf("output = %s", res.stdout)
+	}
+	// The response is not retried again: the second call used the new token.
+	if errors.CodeOf(errors.New(errors.CodeSuccess, "")) != errors.CodeSuccess {
+		t.Fatal("sanity")
+	}
+}
+
+// TestOAuthUnauthorizedWithoutRefreshExitsThree covers a rejected refresh after
+// a 401: exit 3 with a pointer at auth login.
+func TestOAuthUnauthorizedWithoutRefreshExitsThree(t *testing.T) {
+	stub := newOAuthStub(t)
+	stub.apply(t)
+	stub.mu.Lock()
+	stub.rejectRefresh = true
+	stub.mu.Unlock()
+	api := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		s, b := apiErr(401, 1000, "Invalid access token")
+		return s, b
+	})
+	newHome(t)
+	t.Setenv("FLAREADM_API_TOKEN", "")
+	writeStoredCredential(t, "default", storedCredentialMap(time.Now().Add(30*time.Minute)))
+
+	res := runCLI(t, "zone", "list", "--endpoint-url", api.srv.URL)
+	if res.code != errors.CodeAuth {
+		t.Fatalf("code=%d, want 3 (stderr=%q)", res.code, res.stderr)
+	}
+	if !strings.Contains(res.stderr, "auth login") {
+		t.Fatalf("stderr should point at auth login: %q", res.stderr)
+	}
+}
+
+// TestOAuthForbiddenIsNotRetried covers the 403 rule: no refresh, no retry, and
+// a message that states both possible causes without claiming which.
+func TestOAuthForbiddenIsNotRetried(t *testing.T) {
+	stub := newOAuthStub(t)
+	stub.apply(t)
+	apiCalls := 0
+	api := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		apiCalls++
+		s, b := apiErr(403, 9109, "Unauthorized to access requested resource")
+		return s, b
+	})
+	newHome(t)
+	t.Setenv("FLAREADM_API_TOKEN", "")
+	writeStoredCredential(t, "default", storedCredentialMap(time.Now().Add(30*time.Minute)))
+
+	res := runCLI(t, "zone", "list", "--endpoint-url", api.srv.URL)
+	if res.code != errors.CodePermission {
+		t.Fatalf("code=%d, want 4 (stderr=%q)", res.code, res.stderr)
+	}
+	if apiCalls != 1 {
+		t.Fatalf("403 must not be retried: %d API calls", apiCalls)
+	}
+	stub.mu.Lock()
+	requests := len(stub.forms)
+	stub.mu.Unlock()
+	if requests != 0 {
+		t.Fatalf("403 must not trigger a refresh: %d oauth requests", requests)
+	}
+	for _, want := range []string{"granted scopes", "account role", "auth login --all-scopes", "auth status"} {
+		if !strings.Contains(res.stderr, want) {
+			t.Fatalf("403 hint missing %q: %q", want, res.stderr)
+		}
+	}
+}
+
+// TestForbiddenHintAbsentForAPITokens: the hint is OAuth-only.
+func TestForbiddenHintAbsentForAPITokens(t *testing.T) {
+	setToken(t, "tok")
+	newHome(t)
+	api := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		s, b := apiErr(403, 9109, "forbidden")
+		return s, b
+	})
+	res := runCLI(t, "zone", "list", "--endpoint-url", api.srv.URL)
+	if res.code != errors.CodePermission {
+		t.Fatalf("code=%d, want 4", res.code)
+	}
+	if strings.Contains(res.stderr, "auth login --all-scopes") || strings.Contains(res.stderr, "granted scopes") {
+		t.Fatalf("API-token 403 must not get the OAuth hint: %q", res.stderr)
+	}
+}
+
+// TestOAuthVerifyAndStatusIdentity: OAuth credentials verify with GET /user,
+// API tokens keep using GET /user/tokens/verify.
+func TestOAuthVerifyAndStatusIdentity(t *testing.T) {
+	stub := newOAuthStub(t)
+	stub.apply(t)
+	paths := []string{}
+	api := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		paths = append(paths, path)
+		switch path {
+		case "/user":
+			return 200, envelope(map[string]any{"id": "user-1", "email": "dev@example.com", "first_name": "Dev", "last_name": "Eloper"})
+		case "/user/tokens/verify":
+			return 200, envelope(map[string]any{"id": "token-1", "status": "active"})
+		}
+		s, b := apiErr(404, 7000, "not found")
+		return s, b
+	})
+	newHome(t)
+	t.Setenv("FLAREADM_API_TOKEN", "")
+	writeStoredCredential(t, "default", storedCredentialMap(time.Now().Add(time.Hour)))
+
+	res := runCLI(t, "auth", "verify", "--endpoint-url", api.srv.URL)
+	if res.code != 0 {
+		t.Fatalf("oauth verify: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if len(paths) != 1 || paths[0] != "/user" {
+		t.Fatalf("oauth verify paths = %v, want [/user]", paths)
+	}
+	if !strings.Contains(res.stdout, "dev@example.com") || !strings.Contains(res.stdout, "Dev Eloper") {
+		t.Fatalf("oauth verify output = %s", res.stdout)
+	}
+
+	// Status adds the identity row for OAuth credentials.
+	res = runCLI(t, "auth", "status", "--endpoint-url", api.srv.URL)
+	if res.code != 0 || !strings.Contains(res.stdout, "dev@example.com") {
+		t.Fatalf("status identity: code=%d stdout=%q", res.code, res.stdout)
+	}
+	for _, want := range []string{"SOURCE", "oauth:default", "SCOPES", "EXPIRES", "REFRESH TOKEN", "STORE", "USER"} {
+		if !strings.Contains(res.stdout, want) {
+			t.Fatalf("status output missing %q: %s", want, res.stdout)
+		}
+	}
+	if strings.Contains(res.stdout, "stored-access-token") || strings.Contains(res.stdout, "stored-refresh-token") {
+		t.Fatalf("status leaked token material: %s", res.stdout)
+	}
+
+	// An API token keeps the old verification call.
+	setToken(t, "tok")
+	paths = nil
+	res = runCLI(t, "auth", "verify", "--endpoint-url", api.srv.URL)
+	if res.code != 0 || len(paths) != 1 || paths[0] != "/user/tokens/verify" {
+		t.Fatalf("api-token verify: code=%d paths=%v stdout=%q", res.code, paths, res.stdout)
+	}
+	if !strings.Contains(res.stdout, "active") {
+		t.Fatalf("api-token verify output = %s", res.stdout)
+	}
+}
+
+// TestStoreBackedRefreshFailureDoesNotHang: an unreachable token endpoint during
+// a proactive refresh exits 8 quickly instead of hanging.
+func TestStoreBackedRefreshFailureDoesNotHang(t *testing.T) {
+	newHome(t)
+	t.Setenv("FLAREADM_API_TOKEN", "")
+	t.Setenv("FLAREADM_OAUTH_TOKEN_URL", "http://127.0.0.1:1/oauth2/token")
+	api := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		t.Error("the API must not be called when the refresh fails")
+		return 200, envelope(nil)
+	})
+	writeStoredCredential(t, "default", storedCredentialMap(time.Now().Add(time.Minute)))
+
+	start := time.Now()
+	res := runCLI(t, "zone", "list", "--endpoint-url", api.srv.URL, "--timeout", "2s")
+	elapsed := time.Since(start)
+	if res.code != errors.CodeNetwork {
+		t.Fatalf("code=%d, want 8 (stderr=%q)", res.code, res.stderr)
+	}
+	if elapsed > 10*time.Second {
+		t.Fatalf("refresh failure took %s; it must not hang", elapsed)
 	}
 }

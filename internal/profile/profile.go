@@ -13,7 +13,7 @@ const ProfileEnvVar = "FLAREADM_PROFILE"
 
 // ConfigKeys are the supported per-profile configuration keys in
 // configuration-file order.
-var ConfigKeys = []string{"account_id", "api_token_env", "default_zone"}
+var ConfigKeys = []string{"account_id", "api_token_env", "default_zone", "oauth_client_id"}
 
 // ActiveName resolves the profile name: --profile wins, then
 // FLAREADM_PROFILE, then the default profile name.

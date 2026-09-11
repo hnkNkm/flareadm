@@ -54,6 +54,7 @@ func profileValues(p *config.Profile) map[string]string {
 	out["account_id"] = p.AccountID
 	out["api_token_env"] = p.APITokenEnv
 	out["default_zone"] = p.DefaultZone
+	out["oauth_client_id"] = p.OAuthClientID
 	return out
 }
 
@@ -116,7 +117,8 @@ func newGet(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "get [KEY]",
 		Short: "Print a configuration value for the active profile",
-		Long: "Print the value of KEY (account_id, api_token_env or default_zone) for the\n" +
+		Long: "Print the value of KEY (account_id, api_token_env, default_zone or\n" +
+			"oauth_client_id) for the\n" +
 			"active profile, or the whole profile when KEY is omitted.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -161,7 +163,8 @@ func newSet(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "set KEY VALUE",
 		Short: "Set a configuration value for the active profile",
-		Long: "Set KEY (account_id, api_token_env or default_zone) to VALUE in the active\n" +
+		Long: "Set KEY (account_id, api_token_env, default_zone or oauth_client_id) to VALUE\n" +
+			"in the active\n" +
 			"profile, creating the profile when it does not exist.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -182,6 +185,8 @@ func newSet(rt *app.Runtime) *cobra.Command {
 				p.APITokenEnv = value
 			case "default_zone":
 				p.DefaultZone = value
+			case "oauth_client_id":
+				p.OAuthClientID = value
 			}
 			cfg.Set(name, p)
 			if err := cfg.Save(); err != nil {

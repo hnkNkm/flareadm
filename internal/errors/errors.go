@@ -44,6 +44,8 @@ type ExitError struct {
 	Code int
 	Msg  string
 	Err  error
+	// StatusCode is the HTTP status of an API failure (0 for local errors).
+	StatusCode int
 }
 
 func (e *ExitError) Error() string {
@@ -122,6 +124,7 @@ const APIErrorCodeAuth = 1000
 // FromAPIFailure maps a Cloudflare API failure (HTTP status plus the first
 // application error code/message reported in the body) to an ExitError.
 func FromAPIFailure(status int, cfCode int64, message string, method, path string) *ExitError {
+	statusCode := status
 	code := APIStatus(status)
 	if status == 400 && cfCode == APIErrorCodeAuth {
 		code = CodeAuth
@@ -138,7 +141,7 @@ func FromAPIFailure(status int, cfCode int64, message string, method, path strin
 		detail = fmt.Sprintf("HTTP %d %s: %s", status, httpText(status), detail)
 	}
 	msg := fmt.Sprintf("%s failed: %s", verb, detail)
-	return &ExitError{Code: code, Msg: msg}
+	return &ExitError{Code: code, Msg: msg, StatusCode: statusCode}
 }
 
 // FromTransport maps transport-level failures (connection errors, timeouts,

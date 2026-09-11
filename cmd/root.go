@@ -140,7 +140,11 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 	}
 	var exit *errors.ExitError
 	if stderrors.As(err, &exit) {
-		printError(errOut, rt.Redact(err.Error()))
+		msg := rt.Redact(err.Error())
+		if exit.Code == errors.CodePermission {
+			msg += rt.PermissionHint()
+		}
+		printError(errOut, msg)
 		return exit.Code
 	}
 	// Cobra leaves plain errors for unknown subcommands/flags.

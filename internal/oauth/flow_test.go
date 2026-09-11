@@ -419,3 +419,61 @@ func TestWithOfflineScopesAppendsRequired(t *testing.T) {
 		t.Fatalf("duplicate scopes: %v", got)
 	}
 }
+
+// TestRefreshRotationRaceKeepsValidToken simulates two processes refreshing the
+// same stored credential: whichever writes last, the store must hold a token
+// the server still accepts (docs/oauth.md §9).
+func TestRefreshRotationRaceKeepsValidToken(t *testing.T) {
+	fake := newFakeOAuth(t)
+	store := newStoreDir(t)
+	stored := sampleCredential()
+	if err := store.Save("work", stored); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	rotations := []string{"rotated-by-a", "rotated-by-b"}
+	for i, rotated := range rotations {
+		wg.Add(1)
+		go func(i int, rotated string) {
+			defer wg.Done()
+			fake.mu.Lock()
+			fake.rotateRefresh = rotated
+			fake.tokenResponse = map[string]any{
+				"access_token":  "access-" + rotated,
+				"refresh_token": rotated,
+				"expires_in":    3600,
+			}
+			fake.mu.Unlock()
+			next, err := Refresh(context.Background(), RefreshOptions{
+				ClientID: stored.ClientID, Credential: stored, Endpoints: fake.endpoints(),
+			})
+			if err != nil {
+				t.Errorf("refresh %d: %v", i, err)
+				return
+			}
+			if err := store.Save("work", next); err != nil {
+				t.Errorf("save %d: %v", i, err)
+			}
+		}(i, rotated)
+	}
+	wg.Wait()
+
+	last, ok, err := store.Load("work")
+	if err != nil || !ok {
+		t.Fatalf("load after race: ok=%v err=%v", ok, err)
+	}
+	valid := map[string]bool{rotations[0]: true, rotations[1]: true}
+	if !valid[last.RefreshToken] {
+		t.Fatalf("stored refresh token = %q, want one of the rotations", last.RefreshToken)
+	}
+	if last.AccessToken == "" {
+		t.Fatal("stored access token is empty after the race")
+	}
+	// The stored token still works for a further refresh.
+	if _, err := Refresh(context.Background(), RefreshOptions{
+		ClientID: last.ClientID, Credential: last, Endpoints: fake.endpoints(),
+	}); err != nil {
+		t.Fatalf("refresh with the surviving token failed: %v", err)
+	}
+}

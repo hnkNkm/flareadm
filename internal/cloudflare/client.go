@@ -36,12 +36,17 @@ type Options struct {
 	RawMode        bool // --raw: services return raw API bodies
 	Policy         pagination.Policy
 	Logger         *logging.Logger
+	// RefreshToken, when set, is called once after an HTTP 401 to obtain a
+	// fresh access token; the request is then retried exactly once (docs/oauth.md §9).
+	// A nil hook disables the behaviour (API tokens have nothing to refresh).
+	RefreshToken func(ctx context.Context) (string, error)
 }
 
 // Client is the FlareADM Cloudflare adapter. All requests — first-class
 // service calls and the api request escape hatch — flow through the same
 // SDK transport, retry middleware and error normalization.
 type Client struct {
+	opts   Options
 	sdk    *cloudflare.Client
 	raw    bool
 	policy pagination.Policy
@@ -80,7 +85,7 @@ func New(o Options) (*Client, error) {
 		option.WithMiddleware(debugMiddleware(o.Logger)),
 	)
 
-	return &Client{sdk: sdkClient, raw: o.RawMode, policy: o.Policy, log: o.Logger}, nil
+	return &Client{sdk: sdkClient, opts: o, raw: o.RawMode, policy: o.Policy, log: o.Logger}, nil
 }
 
 // RawMode reports whether --raw output mode is active.
@@ -139,9 +144,52 @@ func (c *Client) doWithHeaders(ctx context.Context, method, path string, query u
 	}
 	err := c.sdk.Execute(ctx, method, reqURL, nil, dst, opts...)
 	if err != nil {
-		return nil, c.mapError(err, method, reqURL)
+		mapped := c.mapError(err, method, reqURL)
+		fresh, refreshErr, retry := c.refreshOnUnauthorized(ctx, mapped)
+		if refreshErr != nil {
+			return nil, refreshErr
+		}
+		if retry {
+			retryOpts := append([]option.RequestOption{option.WithHeader("Authorization", "Bearer "+fresh)}, opts...)
+			dst = new([]byte)
+			retryErr := c.sdk.Execute(ctx, method, reqURL, nil, dst, retryOpts...)
+			if retryErr != nil {
+				return nil, c.mapError(retryErr, method, reqURL)
+			}
+			return *dst, nil
+		}
+		return nil, mapped
 	}
 	return *dst, nil
+}
+
+// refreshOnUnauthorized refreshes an OAuth access token after a 401 so the
+// caller can retry the request once. It reports ok=false when the failure is
+// not a 401 or no refresh hook is configured; a failed refresh returns its own
+// error to the caller (exit code 3 for a rejected refresh).
+// It returns retry=true with a fresh token when the request should be retried,
+// refreshErr when the refresh itself failed (the caller surfaces that error, so
+// the user sees "run auth login" instead of a bare 401), and (== false, nil)
+// when no retry applies.
+func (c *Client) refreshOnUnauthorized(ctx context.Context, err error) (string, error, bool) {
+	if c.opts.RefreshToken == nil {
+		return "", nil, false
+	}
+	var exit *errors.ExitError
+	if !stderrors.As(err, &exit) || exit.StatusCode != http.StatusUnauthorized {
+		return "", nil, false
+	}
+	fresh, refreshErr := c.opts.RefreshToken(ctx)
+	if refreshErr != nil {
+		return "", refreshErr, false
+	}
+	if fresh == "" {
+		return "", nil, false
+	}
+	if c.log != nil {
+		c.log.Debugf("access token refreshed after HTTP 401; retrying once")
+	}
+	return fresh, nil, true
 }
 
 // requestJSON performs a request whose response carries the Cloudflare JSON

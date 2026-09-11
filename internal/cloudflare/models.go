@@ -86,6 +86,15 @@ type Verification struct {
 	Status string `json:"status" yaml:"status"`
 }
 
+// UserDetails is the identity of the credential owner (GET /user).
+type UserDetails struct {
+	ID        string `json:"id" yaml:"id"`
+	Email     string `json:"email,omitempty" yaml:"email,omitempty"`
+	FirstName string `json:"first_name,omitempty" yaml:"first_name,omitempty"`
+	LastName  string `json:"last_name,omitempty" yaml:"last_name,omitempty"`
+	Username  string `json:"username,omitempty" yaml:"username,omitempty"`
+}
+
 // ImportResult is the normalized DNS record import summary.
 type ImportResult struct {
 	RecsAdded          float64 `json:"recs_added" yaml:"recs_added"`

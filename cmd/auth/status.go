@@ -60,6 +60,15 @@ func newStatus(rt *app.Runtime) *cobra.Command {
 				if stored.RefreshToken != "" {
 					refresh = "yes"
 				}
+				identity := "(unavailable)"
+				if client, err := rt.CloudClient(); err == nil {
+					if res, err := client.UserDetails(cmd.Context()); err == nil && res != nil {
+						identity = res.Item.Email
+						if identity == "" {
+							identity = res.Item.ID
+						}
+					}
+				}
 				fields = append(fields,
 					struct{ name, value string }{"SOURCE", "oauth:" + profileName},
 					struct{ name, value string }{"KIND", "oauth (stored, " + stored.TokenType + ")"},
@@ -68,6 +77,7 @@ func newStatus(rt *app.Runtime) *cobra.Command {
 					struct{ name, value string }{"EXPIRES", expiry},
 					struct{ name, value string }{"REFRESH TOKEN", refresh},
 					struct{ name, value string }{"STORE", store.Path(profileName)},
+					struct{ name, value string }{"USER", identity},
 				)
 			}
 

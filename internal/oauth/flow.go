@@ -283,11 +283,17 @@ func callbackHandler(state string, codeCh chan<- string, failureCh chan<- error)
 	})
 }
 
+// writeCallbackPage answers the browser and flushes immediately: the login
+// goroutine closes the listener as soon as it has the code or the failure, so
+// an unflushed response would be cut off (the browser would see EOF).
 func writeCallbackPage(w http.ResponseWriter, title, message string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = fmt.Fprintf(w, "<!doctype html><html><head><title>%s</title></head><body><h1>%s</h1><p>%s</p></body></html>",
 		htmlEscape(title), htmlEscape(title), htmlEscape(message))
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }
 
 func htmlEscape(s string) string {

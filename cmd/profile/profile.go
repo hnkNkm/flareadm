@@ -19,14 +19,18 @@ import (
 
 // profileData is the normalized shape of one profile in machine output.
 type profileData struct {
-	Name        string `json:"name" yaml:"name"`
-	AccountID   string `json:"account_id,omitempty" yaml:"account_id,omitempty"`
-	APITokenEnv string `json:"api_token_env,omitempty" yaml:"api_token_env,omitempty"`
-	DefaultZone string `json:"default_zone,omitempty" yaml:"default_zone,omitempty"`
+	Name          string `json:"name" yaml:"name"`
+	AccountID     string `json:"account_id,omitempty" yaml:"account_id,omitempty"`
+	APITokenEnv   string `json:"api_token_env,omitempty" yaml:"api_token_env,omitempty"`
+	DefaultZone   string `json:"default_zone,omitempty" yaml:"default_zone,omitempty"`
+	OAuthClientID string `json:"oauth_client_id,omitempty" yaml:"oauth_client_id,omitempty"`
 }
 
 func fromProfile(name string, p config.Profile) profileData {
-	return profileData{Name: name, AccountID: p.AccountID, APITokenEnv: p.APITokenEnv, DefaultZone: p.DefaultZone}
+	return profileData{
+		Name: name, AccountID: p.AccountID, APITokenEnv: p.APITokenEnv,
+		DefaultZone: p.DefaultZone, OAuthClientID: p.OAuthClientID,
+	}
 }
 
 // New builds the profile command group.
@@ -50,15 +54,17 @@ func load(rt *app.Runtime) (*config.Config, error) { return rt.Config() }
 
 // profileFlags are the shared create/update options.
 type profileFlags struct {
-	accountID   string
-	apiTokenEnv string
-	defaultZone string
+	accountID     string
+	apiTokenEnv   string
+	defaultZone   string
+	oauthClientID string
 }
 
 func addProfileFlags(cmd *cobra.Command, pf *profileFlags) {
 	cmd.Flags().StringVar(&pf.accountID, "account-id", "", "account id for the profile")
 	cmd.Flags().StringVar(&pf.apiTokenEnv, "api-token-env", "", "name of the environment variable holding the API token")
 	cmd.Flags().StringVar(&pf.defaultZone, "default-zone", "", "default zone name or id for the profile")
+	cmd.Flags().StringVar(&pf.oauthClientID, "oauth-client-id", "", "OAuth client id used by 'auth login'")
 }
 
 func (pf profileFlags) apply(p *config.Profile) {
@@ -71,11 +77,14 @@ func (pf profileFlags) apply(p *config.Profile) {
 	if pf.defaultZone != "" {
 		p.DefaultZone = pf.defaultZone
 	}
+	if pf.oauthClientID != "" {
+		p.OAuthClientID = pf.oauthClientID
+	}
 }
 
 // changed reports whether any flag was explicitly set.
 func (pf profileFlags) changed(cmd *cobra.Command) bool {
-	for _, name := range []string{"account-id", "api-token-env", "default-zone"} {
+	for _, name := range []string{"account-id", "api-token-env", "default-zone", "oauth-client-id"} {
 		if cmd.Flags().Changed(name) {
 			return true
 		}
@@ -142,6 +151,7 @@ func newGet(rt *app.Runtime) *cobra.Command {
 					{"account_id", p.AccountID},
 					{"api_token_env", p.APITokenEnv},
 					{"default_zone", p.DefaultZone},
+					{"oauth_client_id", p.OAuthClientID},
 				}
 				return rt.Printer().PrintTable([]string{"KEY", "VALUE"}, rows)
 			}
@@ -201,7 +211,7 @@ func newUpdate(rt *app.Runtime) *cobra.Command {
 				return errors.New(errors.CodeNotFound, "profile %q does not exist", name)
 			}
 			if !pf.changed(cmd) {
-				return errors.Usage("nothing to update; pass at least one of --account-id, --api-token-env, --default-zone")
+				return errors.Usage("nothing to update; pass at least one of --account-id, --api-token-env, --default-zone, --oauth-client-id")
 			}
 			pf.apply(&p)
 			cfg.Set(name, p)
@@ -268,6 +278,9 @@ func describe(p config.Profile) string {
 	}
 	if p.DefaultZone != "" {
 		parts = append(parts, "default_zone="+p.DefaultZone)
+	}
+	if p.OAuthClientID != "" {
+		parts = append(parts, "oauth_client_id="+p.OAuthClientID)
 	}
 	if len(parts) == 0 {
 		return "no settings"
