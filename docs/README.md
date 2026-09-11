@@ -27,6 +27,7 @@ development; use FlareADM for remote account and infrastructure administration.
 | Wrangler clone | No |
 | Machine output | Stable normalized JSON + `--raw` mode |
 | Profiles | Yes |
+| Authentication | Cloudflare API tokens (implemented); OAuth login proposed — see [oauth.md](oauth.md) |
 | CI/agent support | First-class |
 | Telemetry | None by default |
 | License | Apache-2.0 |
@@ -38,6 +39,7 @@ development; use FlareADM for remote account and infrastructure administration.
 | [design.md](design.md) | Positioning, background, goals, non-goals, principles, naming |
 | [cli.md](cli.md) | Command model, global options, output contract, exit codes |
 | [configuration.md](configuration.md) | Profiles, credential policy, account and zone resolution |
+| [oauth.md](oauth.md) | Proposal: OAuth login for Cloudflare's global OAuth server (not implemented) |
 | [architecture.md](architecture.md) | API client layering, Go structure, dependencies, performance |
 | [development.md](development.md) | Nix dev shell, build, test, lint, release |
 | [roadmap.md](roadmap.md) | v0.1 scope, roadmap, compatibility policy, open decisions |

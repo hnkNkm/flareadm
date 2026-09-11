@@ -212,6 +212,12 @@ drift check.
 
 The compatibility policy below is now in effect for post-1.0 releases.
 
+### v1.1
+
+OAuth login (`auth login` / `auth logout` / `auth status`) is proposed in
+[oauth.md](oauth.md). It is **not implemented**. It is blocked on the client-id decision and
+the Phase 0 live verification spike listed in that document.
+
 ## Compatibility policy
 
 Before v1.0, command changes are permitted but must be documented.
