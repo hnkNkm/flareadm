@@ -1,12 +1,12 @@
 # OAuth login for FlareADM
 
-**Status: Phases 1-4 implemented (unreleased); Phase 5 (docs/release) pending.** FlareADM
+**Status: implemented in v1.1.0 (Phases 1-4); Phase 0 live verification and the client-id decision remain open.** FlareADM
 authenticates with Cloudflare API tokens and additionally supports a stored OAuth credential
 obtained with `flareadm auth login` (see `docs/configuration.md`); environment variables still take
 precedence. The credential store, the resolution-chain fallback, the PKCE loopback flow with
 proactive refresh and 401 refresh-and-retry, `auth login`/`logout`/`status`/`verify`, and
-scope-aware 403 guidance all exist in the binary. The open questions and blocking decisions below
-(Q1 client id, the Phase 0 live verification spike) are still pending.
+scope-aware 403 guidance ship in v1.1.0. The open questions and risks in §13 (Q1, Q2, Q3, Q4–Q11)
+remain open.
 
 Every factual claim about Cloudflare cites the URL it came from. Claims that the public
 documentation does not support are marked `[INFERENCE]` with the reasoning, or listed under
@@ -766,6 +766,8 @@ against a live account before implementation is claimed complete:
   is at fault, so FlareADM does not guess. When the request used an OAuth credential it appends a
   note naming both possibilities and how to check: `flareadm auth status` shows the granted scopes,
   and `flareadm auth login --all-scopes` re-logs in with more. API-token credentials get no note.
+  **Still open:** the ambiguity itself is unresolved — this is a documented risk with better
+  messaging, not a closed question, and it cannot be closed without the Phase 0 live verification.
 - **Q10 (risk): public-client irreversibility.** If the project ever registers a client, the
   public/private choice is a one-way door (E1) — decide deliberately.
 - **Q11 (risk): plaintext store.** Same exposure as Wrangler's default (E4), but users may expect

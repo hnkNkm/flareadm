@@ -214,13 +214,27 @@ The compatibility policy below is now in effect for post-1.0 releases.
 
 ### v1.1
 
-OAuth login (`auth login` / `auth logout` / `auth status`, plus `auth verify` for OAuth
-credentials) is specified in [oauth.md](oauth.md). **Phases 1-4 are implemented but unreleased**:
-the per-profile credential store (owner-only, atomic, versioned), the resolution-chain fallback
-behind environment variables, the PKCE loopback flow with revocation, proactive refresh and 401
-refresh-and-retry, identity verification and scope-aware 403 guidance. **Phase 5 (docs and
-release) is pending.** It remains blocked on the client-id decision and the Phase 0 live scope
-verification recorded in `oauth.md`.
+Shipped as **v1.1.0** (2026-09-12).
+
+Delivered:
+
+- `auth login` / `auth logout` / `auth status`, plus `auth verify` for OAuth credentials;
+- a per-profile OAuth credential store (owner-only `0700`/`0600`, atomic, versioned) beside the
+  configuration file;
+- environment-first resolution: the stored OAuth credential is the last fallback;
+- refresh handling: a proactive expiry window plus a single refresh-and-retry on HTTP 401;
+- OAuth identity verification (`GET /user`) and scope-aware 403 guidance;
+- actionable `auth login` failure messages (invalid scope, unauthorized client, invalid grant).
+
+Still open:
+
+- Phase 0 live scope verification — the catalog in `cmd/auth/scopes.go` ships as a candidate set
+  (`oauth.md` §5 Q5, §13 Q2);
+- the public-vs-private OAuth client decision (§13 Q1);
+- the default scope set remains read-only (§13 Q3);
+- optional device flow and OS keychain storage.
+
+Specification: [oauth.md](oauth.md).
 
 ## Compatibility policy
 

@@ -10,7 +10,7 @@ terminal, a script, a CI pipeline or an AI agent.
 It complements Wrangler rather than replacing it. Use Wrangler for Workers application
 development; use FlareADM for remote account and infrastructure administration.
 
-**Status:** v1.0.0 released (2026-09-11); development continues on v1.x. Command surface, exit codes and normalized output are usable. See the [roadmap](roadmap.md).
+**Status:** v1.1.0 released (2026-09-12); development continues on v1.x. Command surface, exit codes and normalized output are usable. See the [roadmap](roadmap.md).
 
 ## At a glance
 
@@ -27,7 +27,7 @@ development; use FlareADM for remote account and infrastructure administration.
 | Wrangler clone | No |
 | Machine output | Stable normalized JSON + `--raw` mode |
 | Profiles | Yes |
-| Authentication | Cloudflare API tokens (implemented); OAuth login proposed — see [oauth.md](oauth.md) |
+| Authentication | Cloudflare API tokens (default, including CI); OAuth login implemented and requires a registered Cloudflare OAuth client — see [oauth.md](oauth.md) |
 | CI/agent support | First-class |
 | Telemetry | None by default |
 | License | Apache-2.0 |

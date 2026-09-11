@@ -12,7 +12,7 @@
       # Canonical repository and Go module path. Keep in sync with go.mod.
       repo = "github.com/hnkNkm/flareadm";
 
-      version = "1.1.0-unstable-${self.shortRev or "dirty"}";
+      version = "1.2.0-unstable-${self.shortRev or "dirty"}";
 
       systems = [
         "x86_64-linux"
