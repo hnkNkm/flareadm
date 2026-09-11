@@ -136,10 +136,21 @@ waits for the callback only until `--timeout` expires.
 
 #### Headless and SSH
 
-`auth login` normally opens a browser and waits for the loopback callback. On a machine with no
-browser (WSL, a remote shell, a container) use `--no-browser`: the authorize URL is printed once
-and the command waits for the callback until `--timeout` expires (default 5m; exit 8 on timeout).
-A real pipe on stdin (the CI case) fails immediately with exit 2 instead of waiting.
+`auth login` opens the authorize URL in a browser and waits for the loopback callback. The opener
+can be overridden with `$BROWSER` — a whitespace-separated command plus arguments, never run
+through a shell — which is how you point the login at `wslview` or at a custom script, and the way
+to complete a login on WSL or another headless box. Without `$BROWSER`, the platform chain is
+tried in order: `xdg-open` then `wslview` on Linux/WSL, `open` on macOS, and `rundll32
+url.dll,FileProtocolHandler` on Windows.
+
+Opening a browser is best effort. If no opener works, the authorize URL is printed once and the
+login keeps waiting for the callback until `--timeout` expires (default 5m; exit 8 on timeout); an
+opener that starts but does not return is never waited on.
+
+`auth login` requires a real terminal unless `--no-browser` is given. A pipe, `/dev/null`, a
+regular file or a closed stdin is not a terminal, so the command fails fast with exit 2 and points
+at `--no-browser` or `FLAREADM_API_TOKEN` instead of waiting. Use `--no-browser` to print the URL
+once and complete the login elsewhere.
 
 Complete the login either from a browser that can reach the callback, or by forwarding the
 loopback port to the machine running the browser:
@@ -151,8 +162,7 @@ flareadm auth login --no-browser --client-id <id>
 ```
 
 The callback listens on `127.0.0.1:8976` by default (`--callback-host` / `--callback-port`); the
-registered redirect URI must match it. Prefer `--no-browser` on a terminal without a browser — a
-browser-launch attempt that cannot succeed only surfaces the URL when the wait times out.
+registered redirect URI must match it.
 
 The device-authorization flow (the `aws sso login --no-browser` style) is **not implemented**:
 Cloudflare documents the device grant as unsupported for third-party OAuth clients
