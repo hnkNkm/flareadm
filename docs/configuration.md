@@ -65,9 +65,67 @@ For a selected profile:
 1. environment variable named by `api_token_env`;
 2. `FLAREADM_API_TOKEN`;
 3. `CLOUDFLARE_API_TOKEN`;
-4. `CF_API_TOKEN`.
+4. `CF_API_TOKEN`;
+5. the stored OAuth credential for the profile ([OAuth credentials](#oauth-credentials)).
 
-Support for OS credential stores may be added later.
+Environment variables always win: a profile with both an environment token and a stored OAuth
+credential uses the environment token. Support for OS credential stores may be added later.
+
+### OAuth credentials
+
+`flareadm auth login` obtains a credential from Cloudflare's OAuth server (Authorization Code
+with PKCE S256 and a loopback redirect) instead of requiring an API token in the environment.
+It is the last step of the resolution order above, so CI that exports a token is unaffected.
+
+Client setup: register a **private** OAuth client in the Cloudflare dashboard and add the
+loopback redirect URI
+
+```text
+http://127.0.0.1:8976/oauth/callback
+```
+
+Provide the client id with `--client-id`, or set `oauth_client_id` in the profile.
+
+Login flags:
+
+```text
+--client-id <id>        client id (falls back to the profile oauth_client_id)
+--scopes <a,b,c>        explicit scope list
+--all-scopes            request every scope in the catalog
+--read-only             request only read scopes (the default)
+--callback-host <host>  loopback host (default 127.0.0.1)
+--callback-port <port>  loopback port (default 8976)
+--no-browser            print the authorize URL instead of opening a browser
+--timeout <duration>    how long to wait for the callback (default 5m)
+```
+
+The default scope set is read-only; write administration needs `--all-scopes`. Scope names are
+validated against a candidate catalog; the Phase 0 spike in [oauth.md](oauth.md) reconciles it
+with Cloudflare's per-account `GET /oauth/scopes`, so the catalog is not authoritative yet.
+
+Storage: the credential is a per-profile JSON file under the `oauth/` subdirectory of the
+configuration directory — `$XDG_CONFIG_HOME/flareadm/oauth/<profile>.json` (falling back to
+`~/.config/flareadm/oauth/<profile>.json`) or `%APPDATA%\flareadm\oauth\<profile>.json` on
+Windows. The directory is created `0700` and the file `0600` where the platform supports it; the
+file is written atomically and records a format version.
+
+Environment overrides (for offline testing and staging/alternate hosts; not needed in normal use):
+
+```text
+FLAREADM_OAUTH_AUTH_URL
+FLAREADM_OAUTH_TOKEN_URL
+FLAREADM_OAUTH_REVOKE_URL
+```
+
+`auth logout` revokes the refresh token at the revocation endpoint and then deletes the local
+credential. If revocation fails with a network error the credential is kept so logout can be
+retried (exit 8); if the endpoint rejects the token the credential is deleted anyway and the
+rejection is reported (exit 3). `--local` skips the network call and deletes the local credential
+only. API tokens are never touched.
+
+Non-interactive rules: `auth login` never hangs. Without an interactive terminal it fails with
+exit 2 and points at `FLAREADM_API_TOKEN`; with `--no-browser` it prints the authorize URL and
+waits for the callback only until `--timeout` expires.
 
 ### Security rules
 

@@ -73,7 +73,10 @@ flareadm
 │   ├── update
 │   └── delete
 ├── auth
-│   └── verify
+│   ├── verify
+│   ├── login
+│   ├── logout
+│   └── status
 ├── account
 │   ├── list
 │   └── get
@@ -238,6 +241,10 @@ Account-scoped groups (`r2`, `kv`) resolve the account through the standard reso
 `hyperdrive config --origin` and `vectorize vector insert|upsert --vectors` are `@file`-only
 (the origin object and vector payloads carry credentials); both are registered as protected
 secrets and never appear in diagnostics or errors.
+
+`auth login` requests a read-only scope set by default; `--all-scopes` requests the full scope
+catalog (see [configuration.md](configuration.md)). `auth logout` revokes and deletes the stored
+credential (`--local` skips revocation); `auth status` reports which credential source wins.
 
 ## Global options
 

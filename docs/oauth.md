@@ -1,8 +1,11 @@
 # OAuth login for FlareADM
 
-**Status: proposal — not implemented.** FlareADM today authenticates exclusively with Cloudflare
-API tokens (see `docs/configuration.md`). Nothing in this document describes behaviour that exists
-in the binary; it is a decision-ready specification for a future release (proposed: v1.1).
+**Status: Phases 1-2 implemented (unreleased); Phases 3-5 pending.** FlareADM authenticates with
+Cloudflare API tokens and additionally supports a stored OAuth credential obtained with
+`flareadm auth login` (see `docs/configuration.md`); environment variables still take precedence.
+The credential store, the resolution-chain fallback and `auth login`/`logout`/`status` exist in
+the binary. The remaining phases, open questions and blocking decisions below are still pending
+verification against a live account.
 
 Every factual claim about Cloudflare cites the URL it came from. Claims that the public
 documentation does not support are marked `[INFERENCE]` with the reasoning, or listed under
