@@ -134,6 +134,30 @@ Non-interactive rules: `auth login` never hangs. Without an interactive terminal
 exit 2 and points at `FLAREADM_API_TOKEN`; with `--no-browser` it prints the authorize URL and
 waits for the callback only until `--timeout` expires.
 
+#### Headless and SSH
+
+`auth login` normally opens a browser and waits for the loopback callback. On a machine with no
+browser (WSL, a remote shell, a container) use `--no-browser`: the authorize URL is printed once
+and the command waits for the callback until `--timeout` expires (default 5m; exit 8 on timeout).
+A real pipe on stdin (the CI case) fails immediately with exit 2 instead of waiting.
+
+Complete the login either from a browser that can reach the callback, or by forwarding the
+loopback port to the machine running the browser:
+
+```bash
+ssh -L 8976:127.0.0.1:8976 user@host
+# on the remote host:
+flareadm auth login --no-browser --client-id <id>
+```
+
+The callback listens on `127.0.0.1:8976` by default (`--callback-host` / `--callback-port`); the
+registered redirect URI must match it. Prefer `--no-browser` on a terminal without a browser — a
+browser-launch attempt that cannot succeed only surfaces the URL when the wait times out.
+
+The device-authorization flow (the `aws sso login --no-browser` style) is **not implemented**:
+Cloudflare documents the device grant as unsupported for third-party OAuth clients
+(`docs/oauth.md` §5 Q6), and that remains pending live verification.
+
 ### Security rules
 
 FlareADM SHALL:
