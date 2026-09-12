@@ -10,7 +10,7 @@ terminal, a script, a CI pipeline or an AI agent.
 It complements Wrangler rather than replacing it. Use Wrangler for Workers application
 development; use FlareADM for remote account and infrastructure administration.
 
-**Status:** v1.1.0 released (2026-09-12); development continues on v1.x. Command surface, exit codes and normalized output are usable. See the [roadmap](roadmap.md).
+**Status:** v1.1.1 released (2026-09-12); development continues on v1.x. This patch fixes the WSL/headless browser handoff and the login terminal check — no API or flag changes. See the [roadmap](roadmap.md).
 
 ## At a glance
 
@@ -39,7 +39,7 @@ development; use FlareADM for remote account and infrastructure administration.
 | [design.md](design.md) | Positioning, background, goals, non-goals, principles, naming |
 | [cli.md](cli.md) | Command model, global options, output contract, exit codes |
 | [configuration.md](configuration.md) | Profiles, credential policy, account and zone resolution |
-| [oauth.md](oauth.md) | Proposal: OAuth login for Cloudflare's global OAuth server (not implemented) |
+| [oauth.md](oauth.md) | OAuth login (shipped in v1.1.0): design, scope research and open questions |
 | [architecture.md](architecture.md) | API client layering, Go structure, dependencies, performance |
 | [development.md](development.md) | Nix dev shell, build, test, lint, release |
 | [roadmap.md](roadmap.md) | v0.1 scope, roadmap, compatibility policy, open decisions |

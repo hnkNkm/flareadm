@@ -216,6 +216,11 @@ The compatibility policy below is now in effect for post-1.0 releases.
 
 Shipped as **v1.1.0** (2026-09-12).
 
+Patch **v1.1.1** (2026-09-12) fixes the browser handoff — an opener chain with a `$BROWSER`
+override, a best-effort fallback that prints the authorize URL once, and no blocking on a hung
+opener — and replaces the terminal check with a real terminal test, so `/dev/null`, pipes,
+regular files and closed stdin fail fast with exit 2. No API or flag changes.
+
 Delivered:
 
 - `auth login` / `auth logout` / `auth status`, plus `auth verify` for OAuth credentials;
