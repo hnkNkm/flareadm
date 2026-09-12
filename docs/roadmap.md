@@ -221,6 +221,11 @@ override, a best-effort fallback that prints the authorize URL once, and no bloc
 opener — and replaces the terminal check with a real terminal test, so `/dev/null`, pipes,
 regular files and closed stdin fail fast with exit 2. No API or flag changes.
 
+Patch **v1.1.2** (2026-09-12) always surfaces the authorize URL — printed on stderr before the
+browser handoff, and on stdout with `--no-browser` — and prints a one-time diagnostic after about
+15 seconds without a callback, naming the client-id, redirect-URI and scope checks to make. No API
+or flag changes.
+
 Delivered:
 
 - `auth login` / `auth logout` / `auth status`, plus `auth verify` for OAuth credentials;

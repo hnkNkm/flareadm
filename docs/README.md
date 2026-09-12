@@ -10,7 +10,7 @@ terminal, a script, a CI pipeline or an AI agent.
 It complements Wrangler rather than replacing it. Use Wrangler for Workers application
 development; use FlareADM for remote account and infrastructure administration.
 
-**Status:** v1.1.1 released (2026-09-12); development continues on v1.x. This patch fixes the WSL/headless browser handoff and the login terminal check — no API or flag changes. See the [roadmap](roadmap.md).
+**Status:** v1.1.2 released (2026-09-12); development continues on v1.x. This patch always prints the login URL (stderr, or stdout with `--no-browser`) and adds a stalled-handoff diagnostic — no API or flag changes. See the [roadmap](roadmap.md).
 
 ## At a glance
 
