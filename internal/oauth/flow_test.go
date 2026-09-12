@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -815,5 +817,371 @@ func TestLoginWithFailedOpenerTimesOutWithNetworkError(t *testing.T) {
 	}
 	if !strings.Contains(printed.String(), "could not open a browser automatically") {
 		t.Fatalf("fallback message missing:\n%s", printed.String())
+	}
+}
+
+// ---- authorize preflight (rejected requests are explained in the terminal) --
+
+// authorizeBodyServer serves a fixed body at a URL that looks like the authorize
+// endpoint and records the requests it received.
+type authorizeBodyServer struct {
+	server   *httptest.Server
+	mu       sync.Mutex
+	requests []recordedAuthorizeRequest
+}
+
+type recordedAuthorizeRequest struct {
+	Method string
+	Path   string
+	Query  url.Values
+	Auth   string
+}
+
+func newAuthorizeBodyServer(t *testing.T, status int, body string) *authorizeBodyServer {
+	t.Helper()
+	s := &authorizeBodyServer{}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		s.requests = append(s.requests, recordedAuthorizeRequest{
+			Method: r.Method, Path: r.URL.Path, Query: r.URL.Query(), Auth: r.Header.Get("Authorization"),
+		})
+		header := r.Header.Get("Accept")
+		s.mu.Unlock()
+		if !strings.Contains(header, "text/html") {
+			t.Errorf("the preflight must look like a browser request, Accept=%q", header)
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if status != 0 {
+			w.WriteHeader(status)
+		}
+		_, _ = io.WriteString(w, body)
+	})
+	s.server = httptest.NewServer(handler)
+	t.Cleanup(s.server.Close)
+	return s
+}
+
+func (s *authorizeBodyServer) url() string { return s.server.URL + "/oauth2/auth" }
+
+func (s *authorizeBodyServer) seen() []recordedAuthorizeRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]recordedAuthorizeRequest(nil), s.requests...)
+}
+
+// TestPreflightReportsInvalidClient: Cloudflare embeds error=invalid_client in a
+// JavaScript-rendered page (HTTP 200); the terminal must name the code, quote the
+// description and give the fix, while the login keeps waiting.
+func TestPreflightReportsInvalidClient(t *testing.T) {
+	fake := newFakeOAuth(t)
+	body := `<!doctype html><html><head><title>Cloudflare</title></head><body>
+<div id="root"></div><script>window.__DATA__ = {"error":"invalid_client","error_description":"The requested OAuth 2.0 Client does not exist"};</script></body></html>`
+	auth := newAuthorizeBodyServer(t, http.StatusOK, body)
+	endpoints := fake.endpoints()
+	endpoints.Auth = auth.url()
+
+	var stdout, stderr syncBuffer
+	_, err := Login(context.Background(), LoginOptions{
+		ClientID: "missing-client-id", CallbackHost: "127.0.0.1", CallbackPort: freePort(t),
+		OpenBrowser: true, Timeout: 400 * time.Millisecond,
+		Endpoints: endpoints, Out: &stdout, ErrOut: &stderr,
+		OpenURL: func(string) error { return nil },
+	})
+	if err == nil {
+		t.Fatal("expected the login to keep waiting and time out")
+	}
+	if code := exitCode(err); code != 8 {
+		t.Fatalf("exit code = %d, want 8 (%v)", code, err)
+	}
+	if strings.TrimSpace(stdout.String()) != "" {
+		t.Fatalf("stdout must stay clean:\\n%s", stdout.String())
+	}
+	for _, want := range []string{
+		"Cloudflare rejected the authorization request: invalid_client - The requested OAuth 2.0 Client does not exist",
+		"the client id does not exist on this Cloudflare account",
+		"Manage Account > OAuth clients",
+		"set oauth_client_id in the profile",
+	} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("diagnostic missing %q:\\n%s", want, stderr.String())
+		}
+	}
+	// The probe is a plain GET on the authorize URL, unauthenticated.
+	seen := auth.seen()
+	if len(seen) != 1 {
+		t.Fatalf("preflight requests = %d, want 1", len(seen))
+	}
+	if seen[0].Method != http.MethodGet || seen[0].Path != "/oauth2/auth" {
+		t.Fatalf("preflight = %s %s, want GET /oauth2/auth", seen[0].Method, seen[0].Path)
+	}
+	if seen[0].Query.Get("client_id") != "missing-client-id" || seen[0].Query.Get("code_challenge") == "" {
+		t.Fatalf("preflight must carry the authorize query: %v", seen[0].Query)
+	}
+	if seen[0].Auth != "" {
+		t.Fatalf("the preflight must be unauthenticated, got Authorization=%q", seen[0].Auth)
+	}
+}
+
+// TestPreflightReportsInvalidScope covers the query-string form of the code and
+// its scope-specific fix.
+func TestPreflightReportsInvalidScope(t *testing.T) {
+	fake := newFakeOAuth(t)
+	auth := newAuthorizeBodyServer(t, http.StatusOK,
+		`<html><body><script>window.location.hash = "error=invalid_scope&amp;error_description=The%20requested%20scopes%20are%20not%20allowed"</script></body></html>`)
+	endpoints := fake.endpoints()
+	endpoints.Auth = auth.url()
+
+	var stdout, stderr syncBuffer
+	_, err := Login(context.Background(), LoginOptions{
+		ClientID: "client-123", CallbackHost: "127.0.0.1", CallbackPort: freePort(t),
+		OpenBrowser: true, Timeout: 300 * time.Millisecond,
+		Endpoints: endpoints, Out: &stdout, ErrOut: &stderr,
+		OpenURL: func(string) error { return nil },
+	})
+	if err == nil {
+		t.Fatal("expected the login to keep waiting and time out")
+	}
+	if !strings.Contains(stderr.String(), "Cloudflare rejected the authorization request: invalid_scope") {
+		t.Fatalf("scope diagnostic missing:\\n%s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "not registered on this OAuth client") ||
+		!strings.Contains(stderr.String(), "retry with --scopes") {
+		t.Fatalf("scope fix missing:\\n%s", stderr.String())
+	}
+	if strings.TrimSpace(stdout.String()) != "" {
+		t.Fatalf("stdout must stay clean:\\n%s", stdout.String())
+	}
+}
+
+// TestPreflightSilentWithoutErrorString: a healthy authorize page and a body
+// without a known code produce no extra output.
+func TestPreflightSilentWithoutErrorString(t *testing.T) {
+	for name, body := range map[string]string{
+		"clean-page":      `<!doctype html><html><body><div id="root">Sign in to continue</div></body></html>`,
+		"unknown-code":    `<html><body>{"error":"temporarily_unavailable"}</body></html>`,
+		"irrelevant-text": `<html><body>error logging is disabled; see the docs for details</body></html>`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := newFakeOAuth(t)
+			auth := newAuthorizeBodyServer(t, http.StatusOK, body)
+			endpoints := fake.endpoints()
+			endpoints.Auth = auth.url()
+
+			var stdout, stderr syncBuffer
+			_, err := Login(context.Background(), LoginOptions{
+				ClientID: "client-123", CallbackHost: "127.0.0.1", CallbackPort: freePort(t),
+				OpenBrowser: true, Timeout: 200 * time.Millisecond,
+				Endpoints: endpoints, Out: &stdout, ErrOut: &stderr,
+				OpenURL: func(string) error { return nil },
+			})
+			if err == nil {
+				t.Fatal("expected the login to keep waiting and time out")
+			}
+			if strings.Contains(stderr.String(), "Cloudflare rejected the authorization request") {
+				t.Fatalf("no diagnostic may be printed:\\n%s", stderr.String())
+			}
+			if strings.TrimSpace(stdout.String()) != "" {
+				t.Fatalf("stdout must stay clean:\\n%s", stdout.String())
+			}
+		})
+	}
+}
+
+// TestPreflightFailureModesAreSilent: transport errors, non-200 and empty bodies
+// carry no information; the login continues unchanged and is not delayed beyond
+// the bounded budget.
+func TestPreflightFailureModesAreSilent(t *testing.T) {
+	fake := newFakeOAuth(t)
+
+	closed := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	closedURL := closed.URL + "/oauth2/auth"
+	closed.Close()
+
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(400 * time.Millisecond)
+		_, _ = io.WriteString(w, `<html>{"error":"invalid_client"}</html>`)
+	}))
+	t.Cleanup(slow.Close)
+
+	cases := []struct {
+		name string
+		auth string
+		body string
+	}{
+		{"connection-refused", closedURL, ""},
+		{"server-error", "", `<html>{"error":"invalid_client"}</html>`},
+		{"empty-body", "", ""},
+		{"slow-beyond-budget", slow.URL + "/oauth2/auth", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			endpoints := fake.endpoints()
+			status := http.StatusOK
+			if tc.name == "server-error" {
+				status = http.StatusBadGateway
+			}
+			auth := newAuthorizeBodyServer(t, status, tc.body)
+			endpoints.Auth = tc.auth
+			if endpoints.Auth == "" {
+				endpoints.Auth = auth.url()
+			}
+			var stdout, stderr syncBuffer
+			_, err := Login(context.Background(), LoginOptions{
+				ClientID: "client-123", CallbackHost: "127.0.0.1", CallbackPort: freePort(t),
+				OpenBrowser: true, Timeout: 300 * time.Millisecond, PreflightTimeout: 50 * time.Millisecond,
+				Endpoints: endpoints, Out: &stdout, ErrOut: &stderr,
+				OpenURL: func(string) error { return nil },
+			})
+			if err == nil {
+				t.Fatal("expected the login to keep waiting and time out")
+			}
+			if code := exitCode(err); code != 8 {
+				t.Fatalf("exit code = %d, want 8 (%v)", code, err)
+			}
+			if strings.Contains(stderr.String(), "Cloudflare rejected the authorization request") {
+				t.Fatalf("a failed preflight must be silent:\\n%s", stderr.String())
+			}
+			if strings.TrimSpace(stdout.String()) != "" {
+				t.Fatalf("stdout must stay clean:\\n%s", stdout.String())
+			}
+		})
+	}
+}
+
+// TestPreflightSkippedWithNoBrowser: the --no-browser path prints the URL to
+// stdout immediately and never probes.
+func TestPreflightSkippedWithNoBrowser(t *testing.T) {
+	fake := newFakeOAuth(t)
+	auth := newAuthorizeBodyServer(t, http.StatusOK, `<html>{"error":"invalid_client"}</html>`)
+	endpoints := fake.endpoints()
+	endpoints.Auth = auth.url()
+
+	var stdout, stderr syncBuffer
+	_, err := Login(context.Background(), LoginOptions{
+		ClientID: "client-123", CallbackHost: "127.0.0.1", CallbackPort: freePort(t),
+		OpenBrowser: false, Timeout: 200 * time.Millisecond,
+		Endpoints: endpoints, Out: &stdout, ErrOut: &stderr,
+	})
+	if err == nil {
+		t.Fatal("expected the login to keep waiting and time out")
+	}
+	if n := countURLs(stdout.String()); n != 1 {
+		t.Fatalf("stdout must carry exactly the authorize URL, got %d:\\n%s", n, stdout.String())
+	}
+	if strings.TrimSpace(stderr.String()) != "" {
+		t.Fatalf("--no-browser must not probe or diagnose:\\n%s", stderr.String())
+	}
+	if seen := auth.seen(); len(seen) != 0 {
+		t.Fatalf("--no-browser must not issue a preflight request, saw %d", len(seen))
+	}
+}
+
+// TestPreflightDoesNotFollowRedirects: a redirect is "not an error page", and
+// following it would let the probe complete the login through the loopback
+// callback (or consume the state) without the user seeing anything.
+func TestPreflightDoesNotFollowRedirects(t *testing.T) {
+	fake := newFakeOAuth(t)
+	var targetHits int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&targetHits, 1)
+		_, _ = io.WriteString(w, `<html>{"error":"invalid_client"}</html>`)
+	}))
+	t.Cleanup(target.Close)
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/oauth2/auth?code=leaked", http.StatusFound)
+	}))
+	t.Cleanup(redirector.Close)
+
+	endpoints := fake.endpoints()
+	endpoints.Auth = redirector.URL + "/oauth2/auth"
+
+	var stdout, stderr syncBuffer
+	_, err := Login(context.Background(), LoginOptions{
+		ClientID: "client-123", CallbackHost: "127.0.0.1", CallbackPort: freePort(t),
+		OpenBrowser: true, Timeout: 200 * time.Millisecond,
+		Endpoints: endpoints, Out: &stdout, ErrOut: &stderr,
+		OpenURL: func(string) error { return nil },
+	})
+	if err == nil {
+		t.Fatal("expected the login to keep waiting and time out")
+	}
+	if hits := atomic.LoadInt32(&targetHits); hits != 0 {
+		t.Fatalf("the preflight followed the redirect %d time(s)", hits)
+	}
+	if strings.Contains(stderr.String(), "Cloudflare rejected the authorization request") {
+		t.Fatalf("a redirect carries no error information:\\n%s", stderr.String())
+	}
+}
+
+// TestPreflightDetectsRejectedRedirect reproduces Cloudflare's live behaviour: a
+// rejected authorize request answers 302 to its own error page with
+// error=invalid_client in the Location header (and a tiny anchor body), while a
+// successful redirect carries code/state and must stay silent.
+func TestPreflightDetectsRejectedRedirect(t *testing.T) {
+	fake := newFakeOAuth(t)
+	const description = "Client authentication failed (e.g., unknown client, no client authentication included, or unsupported authentication method). The requested OAuth 2.0 Client does not exist."
+	errorPage := "https://dash.cloudflare.com/oauth/error?error=invalid_client&error_description=" + url.QueryEscape(description)
+	auth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := `<a href="` + strings.ReplaceAll(errorPage, "&", "&amp;") + `">Found</a>.` + "\n"
+		w.Header().Set("Location", errorPage)
+		w.WriteHeader(http.StatusFound)
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(auth.Close)
+	endpoints := fake.endpoints()
+	endpoints.Auth = auth.URL + "/oauth2/auth"
+
+	var stdout, stderr syncBuffer
+	_, err := Login(context.Background(), LoginOptions{
+		ClientID: "bogus-client", CallbackHost: "127.0.0.1", CallbackPort: freePort(t),
+		OpenBrowser: true, Timeout: 300 * time.Millisecond,
+		Endpoints: endpoints, Out: &stdout, ErrOut: &stderr,
+		OpenURL: func(string) error { return nil },
+	})
+	if err == nil {
+		t.Fatal("expected the login to keep waiting and time out")
+	}
+	if code := exitCode(err); code != 8 {
+		t.Fatalf("exit code = %d, want 8 (%v)", code, err)
+	}
+	if !strings.Contains(stderr.String(), "Cloudflare rejected the authorization request: invalid_client") {
+		t.Fatalf("the redirect-shaped rejection must be reported:\\n%s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "The requested OAuth 2.0 Client does not exist") {
+		t.Fatalf("the description from the Location header is missing:\\n%s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "does not exist on this Cloudflare account") {
+		t.Fatalf("the fix is missing:\\n%s", stderr.String())
+	}
+	if strings.TrimSpace(stdout.String()) != "" {
+		t.Fatalf("stdout must stay clean:\\n%s", stdout.String())
+	}
+}
+
+// TestPreflightIgnoresSuccessfulRedirect: the happy-path redirect carries
+// code/state, never an error code, so it must produce no output.
+func TestPreflightIgnoresSuccessfulRedirect(t *testing.T) {
+	fake := newFakeOAuth(t)
+	auth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", "http://127.0.0.1:1/oauth/callback?code=abc&state=def")
+		w.WriteHeader(http.StatusFound)
+	}))
+	t.Cleanup(auth.Close)
+	endpoints := fake.endpoints()
+	endpoints.Auth = auth.URL + "/oauth2/auth"
+
+	var stdout, stderr syncBuffer
+	_, err := Login(context.Background(), LoginOptions{
+		ClientID: "client-123", CallbackHost: "127.0.0.1", CallbackPort: freePort(t),
+		OpenBrowser: true, Timeout: 200 * time.Millisecond,
+		Endpoints: endpoints, Out: &stdout, ErrOut: &stderr,
+		OpenURL: func(string) error { return nil },
+	})
+	if err == nil {
+		t.Fatal("expected the login to keep waiting and time out")
+	}
+	if strings.Contains(stderr.String(), "Cloudflare rejected the authorization request") {
+		t.Fatalf("a success redirect must stay silent:\\n%s", stderr.String())
 	}
 }

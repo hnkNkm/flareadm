@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -69,6 +71,9 @@ type LoginOptions struct {
 	// BrowserGrace overrides browserGrace, the delay before the diagnostic is
 	// repeated; tests set it small.
 	BrowserGrace time.Duration
+	// PreflightTimeout overrides preflightTimeout, the budget for the
+	// unauthenticated probe of the authorize URL; tests set it small.
+	PreflightTimeout time.Duration
 	// HTTPClient is used for token requests. Nil means a client with Timeout.
 	HTTPClient *http.Client
 	// Protect registers credential material with the runtime's scrubbing
@@ -213,6 +218,26 @@ func Login(ctx context.Context, opts LoginOptions) (Credential, error) {
 		timer := time.NewTimer(grace)
 		defer timer.Stop()
 		graceCh = timer.C
+	}
+
+	// Best-effort preflight: the same unauthenticated GET the browser makes, so
+	// a rejected authorization request (which renders as a blank page in the
+	// browser) is explained here instead. It is advisory only: no information,
+	// no output, and the login keeps waiting either way.
+	if opts.OpenBrowser && errOut != nil {
+		client := opts.HTTPClient
+		if client == nil {
+			// The probe must never follow a redirect: a redirect means "not an
+			// error page", and following it could complete the flow through the
+			// loopback callback (or consume the state) behind the user's back.
+			client = &http.Client{
+				Timeout:       preflightTimeout,
+				CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+			}
+		}
+		if code, description, ok := preflightAuthorize(waitCtx, client, authorizeURL, opts.PreflightTimeout); ok {
+			_, _ = fmt.Fprintln(errOut, authorizeErrorDiagnostic(code, description))
+		}
 	}
 
 	var code string
@@ -432,6 +457,166 @@ func browserDiagnostic(redirectURI, authorizeURL string) string {
   - the requested scopes are registered on the client (pass --scopes for an explicit list).
 Open this URL manually if needed:
 %s`, redirectURI, redirectURI, authorizeURL)
+}
+
+// preflightTimeout bounds the unauthenticated probe of the authorize URL. The
+// probe exists so a rejected authorization request (a blank JavaScript-rendered
+// page in the browser) is explained in the terminal instead. It is advisory and
+// strictly bounded: the login never waits on it longer than this.
+const preflightTimeout = 10 * time.Second
+
+// preflightBodyLimit caps how much of the authorize response is scanned. The
+// known rejection pages are ~23 KB; a page larger than this is truncated, which
+// only makes detection less likely, never wrong.
+const preflightBodyLimit = 256 << 10
+
+// authorizeErrorCodes are the rejection codes Cloudflare embeds in the
+// authorize page, in the forms `error=invalid_client`, `"error":"invalid_client"`
+// and as bare strings inside the JavaScript shell.
+var authorizeErrorCodes = []string{"invalid_client", "invalid_scope", "unauthorized_client", "invalid_request"}
+
+// authorizeErrorCodePatterns matches a known code as a whole word, used when the
+// page embeds the code without an `error=` assignment.
+var authorizeErrorCodePatterns = func() map[string]*regexp.Regexp {
+	patterns := make(map[string]*regexp.Regexp, len(authorizeErrorCodes))
+	for _, code := range authorizeErrorCodes {
+		patterns[code] = regexp.MustCompile(`\b` + code + `\b`)
+	}
+	return patterns
+}()
+
+// authorizeErrorHints is the concrete fix printed for each rejection code.
+var authorizeErrorHints = map[string]string{
+	"invalid_client": "  - the client id does not exist on this Cloudflare account;\n" +
+		"  - verify it in the dashboard under Manage Account > OAuth clients;\n" +
+		"  - or set oauth_client_id in the profile.",
+	"invalid_scope": "  - the requested scopes are not registered on this OAuth client;\n" +
+		"  - retry with --scopes, listing only scopes the client may request.",
+	"unauthorized_client": "  - this OAuth client is not allowed to use the authorization code flow;\n" +
+		"  - check its configuration in the dashboard under Manage Account > OAuth clients.",
+	"invalid_request": "  - the authorization request was rejected as malformed;\n" +
+		"  - retry with the documented --callback-host/--callback-port and --scopes values.",
+}
+
+// authorizeErrorPattern matches the shapes Cloudflare uses for the error code:
+// `error=invalid_client`, `"error": "invalid_client"`, `error: 'invalid_client'`.
+var authorizeErrorPattern = regexp.MustCompile(`(?i)\berror\b["']?\s*[:=]\s*["']?([a-z_]{3,40})`)
+
+// authorizeErrorDescriptionPattern matches the human-readable description that
+// accompanies the code, in JSON or query-string form.
+var authorizeErrorDescriptionPattern = regexp.MustCompile(`(?i)\berror_description\b["']?\s*[:=]\s*["']?([^"'&<>\n]{1,300})`)
+
+// detectAuthorizeError looks for a rejection code in an authorize response body.
+// It reports false unless a known code is found: an empty, truncated or
+// unfamiliar body simply carries no information.
+func detectAuthorizeError(body []byte) (code, description string, ok bool) {
+	text := string(body)
+	found := false
+	if m := authorizeErrorPattern.FindStringSubmatch(text); m != nil {
+		candidate := strings.ToLower(m[1])
+		for _, known := range authorizeErrorCodes {
+			if candidate == known {
+				code, found = known, true
+			}
+		}
+		if !found {
+			// A code we do not have a fix for: report nothing rather than guess.
+			return "", "", false
+		}
+	} else if strings.Contains(strings.ToLower(text), "error") {
+		// The JavaScript shell may embed the code as a bare string without an
+		// `error=` assignment; only treat it as an error when the page mentions
+		// errors at all.
+		for _, known := range authorizeErrorCodes {
+			if authorizeErrorCodePatterns[known].MatchString(text) {
+				code, found = known, true
+				break
+			}
+		}
+		if !found {
+			return "", "", false
+		}
+	}
+	if !found {
+		// Neither shape appeared: the page carries no information.
+		return "", "", false
+	}
+	if m := authorizeErrorDescriptionPattern.FindStringSubmatch(text); m != nil {
+		description = cleanAuthorizeDescription(m[1])
+	}
+	return code, description, true
+}
+
+// cleanAuthorizeDescription normalises the human-readable text Cloudflare embeds:
+// HTML entities, percent-encoding and JavaScript escaping are undone when they
+// decode cleanly, and the raw value is kept otherwise.
+func cleanAuthorizeDescription(raw string) string {
+	text := html.UnescapeString(strings.TrimSpace(raw))
+	if decoded, err := url.QueryUnescape(text); err == nil {
+		text = decoded
+	}
+	return strings.TrimSpace(strings.TrimRight(text, "\\\"'"))
+}
+
+// authorizeErrorDiagnostic renders the operator-facing explanation of a
+// rejected authorization request.
+func authorizeErrorDiagnostic(code, description string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Cloudflare rejected the authorization request: %s", code)
+	if description != "" {
+		fmt.Fprintf(&b, " - %s", description)
+	}
+	b.WriteString("\n")
+	b.WriteString(authorizeErrorHints[code])
+	return b.String()
+}
+
+// preflightAuthorize issues the same unauthenticated GET a browser would and
+// reports the rejection Cloudflare embedded in the response, if any. Every
+// failure mode (transport error, non-200, empty or unrecognised body) means "no
+// information": the caller prints nothing and the login continues.
+func preflightAuthorize(ctx context.Context, client *http.Client, authorizeURL string, budget time.Duration) (code, description string, ok bool) {
+	if budget <= 0 {
+		budget = preflightTimeout
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, authorizeURL, nil)
+	if err != nil {
+		return "", "", false
+	}
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", "", false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		// A rejected request is not always a 200 page: Cloudflare today answers a
+		// bad client id with a 302 to its own error page, carrying
+		// `error=invalid_client&error_description=...` in the Location header (and
+		// in the tiny anchor body). Without this the login stays silent and the
+		// user is back to a stalled handoff, so the same strict code matching is
+		// applied to the Location and to that body. A success redirect carries
+		// `code=...&state=...` and cannot match.
+		if code, description, ok := detectAuthorizeError([]byte(resp.Header.Get("Location"))); ok {
+			return code, description, true
+		}
+		body, err := io.ReadAll(io.LimitReader(resp.Body, preflightBodyLimit))
+		if err != nil || len(body) == 0 {
+			return "", "", false
+		}
+		return detectAuthorizeError(body)
+	}
+	if resp.StatusCode != http.StatusOK {
+		// Any other status is an intermediary or gateway page: no information.
+		return "", "", false
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, preflightBodyLimit))
+	if err != nil || len(body) == 0 {
+		return "", "", false
+	}
+	return detectAuthorizeError(body)
 }
 
 // browserCandidate is one way to open a URL on a platform. The URL is always
