@@ -7,7 +7,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -54,6 +56,21 @@ func openPTY(t *testing.T) (master, slave *os.File) {
 		_ = master.Close()
 	})
 	return master, slave
+}
+
+// waitForText blocks until b contains substr; the flow writes the handoff notice
+// before attempting the opener, so tests must not read the buffer once.
+func waitForText(t *testing.T, b *lockedBuffer, substr string) string {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if s := b.String(); strings.Contains(s, substr) {
+			return s
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("%q never appeared; output so far: %q", substr, b.String())
+	return ""
 }
 
 // runCLIWithStdin is runCLI with an explicit stdin reader, so tests can drive
@@ -144,24 +161,74 @@ func TestAuthLoginTerminalDetection(t *testing.T) {
 		})
 	}
 
-	// A real terminal (pty) must pass the gate: the login then reaches the
-	// browser handoff and times out waiting for the callback instead of
-	// failing the interactivity check.
-	t.Run("pty", func(t *testing.T) {
+	// A real terminal (pty) must pass the gate. The URL is written to stderr
+	// before the handoff, so a blank browser window cannot hide it, while stdout
+	// stays free of the URL; the login then completes when the callback arrives.
+	t.Run("pty-browser-handoff", func(t *testing.T) {
+		// A missing $BROWSER makes the handoff fail deterministically (the
+		// sandbox's xdg-open hangs and is treated as a working browser).
+		t.Setenv("BROWSER", "definitely-not-a-real-browser-xyz")
 		_, slave := openPTY(t)
-		res, _ := runCLIWithStdin(t, slave, "auth", "login",
-			"--client-id", "cli-client", "--timeout", "500ms")
-		if res.code != errors.CodeNetwork {
-			t.Fatalf("code=%d, want 8 (stdout=%q stderr=%q)", res.code, res.stdout, res.stderr)
+		newHome(t)
+		stdout, stderr := &lockedBuffer{}, &lockedBuffer{}
+		done := make(chan int, 1)
+		go func() {
+			done <- Run(context.Background(), []string{"auth", "login",
+				"--client-id", "cli-client", "--callback-port", strconv.Itoa(freePort(t)), "--timeout", "10s"},
+				slave, stdout, stderr)
+		}()
+		url := waitForLine(t, stderr)
+		if !strings.Contains(stderr.String(), "Opening this URL in your browser (use --no-browser to print it and complete the login elsewhere):") {
+			t.Fatalf("the handoff notice is missing from stderr: %q", stderr.String())
 		}
-		if !strings.Contains(res.stdout, "could not open a browser automatically") {
-			t.Fatalf("the pty run must reach the browser handoff: %q", res.stdout)
+		if n := countURLLines(stdout.String()); n != 0 {
+			t.Fatalf("stdout must stay free of the URL in the browser path, got %d: %q", n, stdout.String())
 		}
-		if lines := countURLLines(res.stdout); lines != 1 {
-			t.Fatalf("the authorize URL must be printed exactly once, got %d: %q", lines, res.stdout)
+		waitForText(t, stderr, "could not open a browser automatically")
+		if strings.Contains(stderr.String(), "Still waiting for the browser callback") {
+			t.Fatalf("a failed handoff must not arm the diagnostic: %q", stderr.String())
 		}
-		if !strings.Contains(res.stderr, "timed out") {
-			t.Fatalf("the pty run must wait for the callback: %q", res.stderr)
+		resp, err := http.Get(url) //nolint:gosec // loopback test URL
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		if code := <-done; code != 0 {
+			t.Fatalf("code=%d, want 0 (stdout=%q stderr=%q)", code, stdout.String(), stderr.String())
+		}
+		if n := countURLLines(stdout.String()); n != 0 {
+			t.Fatalf("stdout must stay free of the URL after a successful login: %q", stdout.String())
+		}
+		if n := countURLLines(stderr.String()); n != 1 {
+			t.Fatalf("stderr must carry the URL exactly once, got %d: %q", n, stderr.String())
+		}
+	})
+
+	// --no-browser stays a single stdout URL line with no handoff diagnostics,
+	// and still completes the login.
+	t.Run("pty-no-browser", func(t *testing.T) {
+		_, slave := openPTY(t)
+		newHome(t)
+		stdout, stderr := &lockedBuffer{}, &lockedBuffer{}
+		done := make(chan int, 1)
+		go func() {
+			done <- Run(context.Background(), []string{"auth", "login",
+				"--client-id", "cli-client", "--no-browser", "--callback-port", strconv.Itoa(freePort(t)), "--timeout", "10s"},
+				slave, stdout, stderr)
+		}()
+		url := waitForLine(t, stdout)
+		resp, err := http.Get(url) //nolint:gosec // loopback test URL
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		if code := <-done; code != 0 {
+			t.Fatalf("code=%d, want 0 (stdout=%q stderr=%q)", code, stdout.String(), stderr.String())
+		}
+		if n := countURLLines(stdout.String()); n != 1 {
+			t.Fatalf("stdout must carry the URL exactly once, got %d: %q", n, stdout.String())
+		}
+		if strings.Contains(stderr.String(), "Opening this URL in your browser") ||
+			strings.Contains(stderr.String(), "Still waiting for the browser callback") {
+			t.Fatalf("--no-browser must not print handoff diagnostics: %q", stderr.String())
 		}
 	})
 }

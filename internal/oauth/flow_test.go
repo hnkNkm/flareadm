@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -573,23 +575,26 @@ func TestOpenInBrowserReportsWhenEveryCandidateFails(t *testing.T) {
 // completes when the callback arrives.
 func TestLoginKeepsWaitingWhenBrowserCannotOpen(t *testing.T) {
 	fake := newFakeOAuth(t)
-	var printed syncBuffer
+	var stdout, stderr syncBuffer
 	done := make(chan error, 1)
 	go func() {
 		_, err := Login(context.Background(), LoginOptions{
 			ClientID: "client-123", CallbackHost: "127.0.0.1", CallbackPort: 0,
 			OpenBrowser: true, Timeout: 10 * time.Second,
-			Endpoints: fake.endpoints(), Out: &printed,
+			Endpoints: fake.endpoints(), Out: &stdout, ErrOut: &stderr,
 			OpenURL: func(string) error { return fmt.Errorf("no browser opener worked (xdg-open failed: not found)") },
 		})
 		done <- err
 	}()
-	url := waitForAuthorizeURL(t, &printed)
-	if n := countURLs(printed.String()); n != 1 {
-		t.Fatalf("printed %d URL lines, want exactly 1:\n%s", n, printed.String())
+	url := waitForAuthorizeURL(t, &stderr)
+	if n := countURLs(stderr.String()); n != 1 {
+		t.Fatalf("stderr has %d URL lines, want exactly 1:\n%s", n, stderr.String())
 	}
-	if !strings.Contains(printed.String(), "could not open a browser automatically") {
-		t.Fatalf("fallback message missing:\n%s", printed.String())
+	if !strings.Contains(stderr.String(), "could not open a browser automatically") {
+		t.Fatalf("fallback message missing:\n%s", stderr.String())
+	}
+	if strings.TrimSpace(stdout.String()) != "" {
+		t.Fatalf("stdout must stay clean:\n%s", stdout.String())
 	}
 	browser(t, url)
 	if err := <-done; err != nil {
@@ -597,17 +602,19 @@ func TestLoginKeepsWaitingWhenBrowserCannotOpen(t *testing.T) {
 	}
 }
 
-// TestLoginPrintsNothingWhenBrowserOpens keeps the successful handoff quiet.
-func TestLoginPrintsNothingWhenBrowserOpens(t *testing.T) {
+// TestLoginBrowserPathWritesURLToErrOutOnly: with a browser handoff the URL must
+// be visible on stderr (a blank browser window must never hide it) while stdout
+// stays clean for machine-readable use.
+func TestLoginBrowserPathWritesURLToErrOutOnly(t *testing.T) {
 	fake := newFakeOAuth(t)
-	var printed syncBuffer
+	var stdout, stderr syncBuffer
 	openerCalled := false
 	done := make(chan error, 1)
 	go func() {
 		_, err := Login(context.Background(), LoginOptions{
 			ClientID: "client-123", CallbackHost: "127.0.0.1", CallbackPort: 0,
 			OpenBrowser: true, Timeout: 10 * time.Second,
-			Endpoints: fake.endpoints(), Out: &printed,
+			Endpoints: fake.endpoints(), Out: &stdout, ErrOut: &stderr,
 			OpenURL: func(target string) error {
 				openerCalled = true
 				go browser(t, target)
@@ -622,9 +629,128 @@ func TestLoginPrintsNothingWhenBrowserOpens(t *testing.T) {
 	if !openerCalled {
 		t.Fatal("the opener was not used")
 	}
-	if strings.TrimSpace(printed.String()) != "" {
-		t.Fatalf("a successful handoff must not print the URL:\n%s", printed.String())
+	if strings.TrimSpace(stdout.String()) != "" {
+		t.Fatalf("stdout must stay clean in the browser path:\n%s", stdout.String())
 	}
+	if !strings.Contains(stderr.String(), browserURLNotice) {
+		t.Fatalf("the handoff notice is missing:\n%s", stderr.String())
+	}
+	if n := countURLs(stderr.String()); n != 1 {
+		t.Fatalf("stderr has %d URL lines, want exactly 1:\n%s", n, stderr.String())
+	}
+	if strings.Contains(stderr.String(), "Still waiting for the browser callback") {
+		t.Fatalf("a completed login must not print the diagnostic:\n%s", stderr.String())
+	}
+}
+
+// TestLoginBrowserDiagnosticFiresOnceAfterGrace: when no callback arrives, the
+// URL is repeated exactly once with the three causes of a blank authorize page,
+// and the login keeps waiting for --timeout (exit code 8).
+func TestLoginBrowserDiagnosticFiresOnceAfterGrace(t *testing.T) {
+	fake := newFakeOAuth(t)
+	var stdout, stderr syncBuffer
+	const grace = 50 * time.Millisecond
+	port := freePort(t)
+	_, err := Login(context.Background(), LoginOptions{
+		ClientID: "client-123", CallbackHost: "127.0.0.1", CallbackPort: port,
+		OpenBrowser: true, Timeout: 600 * time.Millisecond, BrowserGrace: grace,
+		Endpoints: fake.endpoints(), Out: &stdout, ErrOut: &stderr,
+		OpenURL: func(string) error { return nil }, // a browser "opened" but nothing came back
+	})
+	if err == nil {
+		t.Fatal("expected a timeout error")
+	}
+	if code := exitCode(err); code != 8 {
+		t.Fatalf("exit code = %d, want 8 (%v)", code, err)
+	}
+	if strings.TrimSpace(stdout.String()) != "" {
+		t.Fatalf("stdout must stay clean in the browser path:\n%s", stdout.String())
+	}
+	if n := strings.Count(stderr.String(), "Still waiting for the browser callback"); n != 1 {
+		t.Fatalf("the diagnostic appeared %d times, want exactly 1:\n%s", n, stderr.String())
+	}
+	// The redirect URI in use is printed with the port actually bound.
+	meta := regexp.MustCompile(`registered on the client exactly as (http://127\.0\.0\.1:\d+/oauth/callback)`).FindStringSubmatch(stderr.String())
+	if meta == nil {
+		t.Fatalf("the diagnostic must print the registered redirect URI:\n%s", stderr.String())
+	}
+	if want := RedirectURI("127.0.0.1", port); meta[1] != want {
+		t.Fatalf("the diagnostic printed redirect URI %q, want %q", meta[1], want)
+	}
+	if !strings.Contains(stderr.String(), "the client id is correct and the client belongs to this Cloudflare account") ||
+		!strings.Contains(stderr.String(), "--scopes") {
+		t.Fatalf("the diagnostic must name all three causes:\n%s", stderr.String())
+	}
+	if n := countURLs(stderr.String()); n != 2 { // the handoff notice plus the diagnostic
+		t.Fatalf("stderr has %d URL lines, want 2 (notice + diagnostic):\n%s", n, stderr.String())
+	}
+	if !strings.Contains(err.Error(), "timed out waiting for the OAuth callback") {
+		t.Fatalf("the timeout error must be unchanged: %v", err)
+	}
+}
+
+// TestLoginNoBrowserSkipsBrowserDiagnostics: the --no-browser path keeps its
+// single stdout URL line and adds nothing to stderr.
+func TestLoginNoBrowserSkipsBrowserDiagnostics(t *testing.T) {
+	fake := newFakeOAuth(t)
+	var stdout, stderr syncBuffer
+	_, err := Login(context.Background(), LoginOptions{
+		ClientID: "client-123", CallbackHost: "127.0.0.1", CallbackPort: freePort(t),
+		OpenBrowser: false, Timeout: 300 * time.Millisecond, BrowserGrace: 50 * time.Millisecond,
+		Endpoints: fake.endpoints(), Out: &stdout, ErrOut: &stderr,
+	})
+	if err == nil {
+		t.Fatal("expected a timeout error")
+	}
+	if code := exitCode(err); code != 8 {
+		t.Fatalf("exit code = %d, want 8 (%v)", code, err)
+	}
+	if n := countURLs(stdout.String()); n != 1 {
+		t.Fatalf("stdout has %d URL lines, want exactly 1:\n%s", n, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), fake.endpoints().Auth) {
+		t.Fatalf("stdout must carry the authorize URL:\n%s", stdout.String())
+	}
+	if strings.TrimSpace(stderr.String()) != "" {
+		t.Fatalf("--no-browser must not write diagnostics to stderr:\n%s", stderr.String())
+	}
+}
+
+// TestLoginNoDiagnosticWhenOpenerFails: a failed handoff already puts the URL and
+// the reason in front of the user, so the grace diagnostic stays silent.
+func TestLoginNoDiagnosticWhenOpenerFails(t *testing.T) {
+	fake := newFakeOAuth(t)
+	var stdout, stderr syncBuffer
+	_, err := Login(context.Background(), LoginOptions{
+		ClientID: "client-123", CallbackHost: "127.0.0.1", CallbackPort: freePort(t),
+		OpenBrowser: true, Timeout: 400 * time.Millisecond, BrowserGrace: 50 * time.Millisecond,
+		Endpoints: fake.endpoints(), Out: &stdout, ErrOut: &stderr,
+		OpenURL: func(string) error { return fmt.Errorf("no browser opener worked (xdg-open failed: not found)") },
+	})
+	if err == nil {
+		t.Fatal("expected a timeout error")
+	}
+	if strings.Contains(stderr.String(), "Still waiting for the browser callback") {
+		t.Fatalf("no diagnostic after a failed handoff:\n%s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "could not open a browser automatically") {
+		t.Fatalf("the handoff failure must be reported:\n%s", stderr.String())
+	}
+	if n := countURLs(stderr.String()); n != 1 {
+		t.Fatalf("stderr has %d URL lines, want exactly 1:\n%s", n, stderr.String())
+	}
+}
+
+// freePort returns a port that was free a moment ago. Tests use dedicated ports
+// so parallel package runs never fight over the documented default (8976).
+func freePort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	return ln.Addr().(*net.TCPAddr).Port
 }
 
 // countURLs counts printed lines that start with a URL.
@@ -673,7 +799,7 @@ func TestLoginWithFailedOpenerTimesOutWithNetworkError(t *testing.T) {
 	fake := newFakeOAuth(t)
 	var printed syncBuffer
 	_, err := Login(context.Background(), LoginOptions{
-		ClientID: "client-123", CallbackHost: "127.0.0.1", CallbackPort: 0,
+		ClientID: "client-123", CallbackHost: "127.0.0.1", CallbackPort: freePort(t),
 		OpenBrowser: true, Timeout: 300 * time.Millisecond,
 		Endpoints: fake.endpoints(), Out: &printed,
 		OpenURL: func(string) error { return fmt.Errorf("no browser opener worked (xdg-open failed: not found)") },

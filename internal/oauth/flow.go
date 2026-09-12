@@ -59,8 +59,16 @@ type LoginOptions struct {
 	// Timeout bounds the wait for the callback. Zero means DefaultLoginTimeout.
 	Timeout   time.Duration
 	Endpoints Endpoints
-	// Out receives the authorize URL when OpenBrowser is false.
+	// Out receives the authorize URL when OpenBrowser is false, and is the only
+	// stream that ever carries it (stdout stays machine-readable).
 	Out io.Writer
+	// ErrOut receives the browser handoff notice and the one-time diagnostic
+	// explaining a blank or failing authorize page. Nil falls back to Out, so a
+	// handoff is never silent.
+	ErrOut io.Writer
+	// BrowserGrace overrides browserGrace, the delay before the diagnostic is
+	// repeated; tests set it small.
+	BrowserGrace time.Duration
 	// HTTPClient is used for token requests. Nil means a client with Timeout.
 	HTTPClient *http.Client
 	// Protect registers credential material with the runtime's scrubbing
@@ -162,32 +170,67 @@ func Login(ctx context.Context, opts LoginOptions) (Credential, error) {
 	go func() { _ = server.Serve(listener) }()
 	defer func() { _ = server.Close() }()
 
+	errOut := opts.ErrOut
+	if errOut == nil {
+		errOut = opts.Out
+	}
+	browserOpened := false
 	if opts.OpenBrowser {
 		opener := opts.OpenURL
 		if opener == nil {
 			opener = openInBrowser
 		}
+		// The URL is always shown, on stderr, before the handoff: an opened
+		// browser window may render nothing, and the user still needs the URL
+		// to copy. stdout is left clean for machine-readable use.
+		if errOut != nil {
+			_, _ = fmt.Fprintf(errOut, "%s\n%s\n", browserURLNotice, authorizeURL)
+		}
 		// Opening a browser is best effort: a missing or failing opener must
-		// never break the login, so the URL is printed exactly once and the
-		// flow keeps waiting for the loopback callback until the timeout.
-		if err := opener(authorizeURL); err != nil && opts.Out != nil {
-			_, _ = fmt.Fprintf(opts.Out,
-				"could not open a browser automatically (%v); open this URL to finish the login:\n%s\n",
-				err, authorizeURL)
+		// never break the login, so the failure is reported (the URL was just
+		// printed above) and the flow keeps waiting for the loopback callback
+		// until the timeout.
+		if err := opener(authorizeURL); err != nil {
+			if errOut != nil {
+				_, _ = fmt.Fprintf(errOut, "could not open a browser automatically (%v); use the URL above.\n", err)
+			}
+		} else {
+			browserOpened = true
 		}
 	} else if opts.Out != nil {
 		_, _ = fmt.Fprintln(opts.Out, authorizeURL)
 	}
 
+	// The diagnostic is armed only when a browser was actually handed the URL:
+	// with --no-browser the URL is the command's stdout output, and after a
+	// failed handoff the user is already looking at the URL and the error.
+	var graceCh <-chan time.Time
+	if browserOpened && errOut != nil {
+		grace := opts.BrowserGrace
+		if grace <= 0 {
+			grace = browserGrace
+		}
+		timer := time.NewTimer(grace)
+		defer timer.Stop()
+		graceCh = timer.C
+	}
+
 	var code string
-	select {
-	case code = <-codeCh:
-	case err := <-failureCh:
-		return Credential{}, err
-	case <-waitCtx.Done():
-		return Credential{}, errors.New(errors.CodeNetwork,
-			"timed out waiting for the OAuth callback on %s after %s; open this URL to finish the login:\n%s",
-			redirectURI, timeout, authorizeURL)
+	for code == "" {
+		select {
+		case code = <-codeCh:
+		case err := <-failureCh:
+			return Credential{}, err
+		case <-graceCh:
+			// Fires at most once: the timer is never reset, so the channel is
+			// nil from here on and the login keeps waiting until --timeout.
+			graceCh = nil
+			_, _ = fmt.Fprintln(errOut, browserDiagnostic(redirectURI, authorizeURL))
+		case <-waitCtx.Done():
+			return Credential{}, errors.New(errors.CodeNetwork,
+				"timed out waiting for the OAuth callback on %s after %s; open this URL to finish the login:\n%s",
+				redirectURI, timeout, authorizeURL)
+		}
 	}
 	protect(code)
 
@@ -365,6 +408,30 @@ func writeCallbackPage(w http.ResponseWriter, title, message string) {
 func htmlEscape(s string) string {
 	replacer := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;")
 	return replacer.Replace(s)
+}
+
+// browserGrace is how long the login waits, after handing the URL to a browser,
+// before repeating the URL with troubleshooting hints. Long enough that a
+// browser which really opened the page is not nagged, short enough that a user
+// staring at a blank tab learns something useful without waiting out --timeout.
+const browserGrace = 15 * time.Second
+
+// browserURLNotice labels the URL written to stderr before a browser handoff. It
+// exists because the browser window may stay blank, and the user must still be
+// able to see and copy the URL. stdout stays machine-readable: it carries the
+// URL only with --no-browser.
+const browserURLNotice = "Opening this URL in your browser (use --no-browser to print it and complete the login elsewhere):"
+
+// browserDiagnostic is the one-time hint printed when no callback arrived within
+// browserGrace. The bullet points are the causes that actually produce a blank
+// or failing authorize page.
+func browserDiagnostic(redirectURI, authorizeURL string) string {
+	return fmt.Sprintf(`Still waiting for the browser callback on %s. If the page is blank or the login did not finish, check that:
+  - the client id is correct and the client belongs to this Cloudflare account;
+  - the redirect URI is registered on the client exactly as %s;
+  - the requested scopes are registered on the client (pass --scopes for an explicit list).
+Open this URL manually if needed:
+%s`, redirectURI, redirectURI, authorizeURL)
 }
 
 // browserCandidate is one way to open a URL on a platform. The URL is always

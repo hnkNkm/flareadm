@@ -83,6 +83,7 @@ func newLogin(rt *app.Runtime) *cobra.Command {
 				Timeout:      timeout,
 				Endpoints:    oauth.EndpointsFromEnv(rt.Getenv),
 				Out:          rt.Out,
+				ErrOut:       rt.Err,
 				Protect:      rt.ProtectSecret,
 			})
 			if err != nil {
