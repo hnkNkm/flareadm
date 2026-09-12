@@ -93,6 +93,35 @@ http://127.0.0.1:8976/oauth/callback
 Provide the client id with `--client-id`, or set `oauth_client_id` in the profile (equivalently
 `configure set oauth_client_id …`, or `profile create`/`update --oauth-client-id`).
 
+### Dashboard client setup
+
+Create the client in the dashboard: **Manage Account > OAuth clients > Create client** (requires
+the Super Administrator, Administrator or OAuth Client Write role).
+
+| Field | Documented options | Value for FlareADM |
+| --- | --- | --- |
+| Client name | any human-readable name | any, for example `FlareADM CLI` |
+| Response type | `code`, `token`, `id_token` | `code` — only Authorization Code is supported for third-party clients |
+| Grant type | `authorization_code` (required), `refresh_token` (optional) | `authorization_code` plus `refresh_token`, because FlareADM stores and uses a refresh token |
+| Token authentication method | `none`, `client_secret_basic`, `client_secret_post` | `none` — CLI clients use PKCE (S256) and no client secret is issued |
+| Redirect URLs | one or more URIs | `http://127.0.0.1:8976/oauth/callback`, matching the CLI's callback exactly; if the dashboard rejects the `127.0.0.1` form, register `http://localhost:8976/oauth/callback` and run the login with `--callback-host localhost` |
+| Client URL (optional) | optional; required for a public client | leave empty for a private client |
+
+Visibility: keep the client **private** — it can then be authorized only by members of the
+account. Making it public additionally requires a client name, logo and client URL plus DNS TXT
+domain-ownership verification (the `cloudflare_oauth_client_publisher=` prefix), and the change is
+permanent.
+
+Scopes: select at least one. Selected scopes are required by default and can be marked optional;
+optional scopes may be declined on the consent screen. `openid`, `offline` and `offline_access`
+cannot be optional and are added or removed automatically based on the grant and response types.
+The authoritative list comes from `GET /oauth/scopes`, and scope names correspond to API token
+permission names.
+
+The dashboard extras above — Client URL, logo and DNS verification — are needed only if you ever
+want a public client; to use OAuth at all you only need the client id, which the CLI takes from
+`--client-id` or the profile key `oauth_client_id`.
+
 Login flags:
 
 ```text
