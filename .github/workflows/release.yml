@@ -12,7 +12,7 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - name: Free disk space
         run: |
@@ -40,6 +40,6 @@ jobs:
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
-          args: release --clean
+          args: release --clean --timeout 2h
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
