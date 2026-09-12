@@ -149,7 +149,11 @@ blank; with `--no-browser` it is printed on stdout instead, and stdout is otherw
 no callback arrives within about 15 seconds, a one-time diagnostic names the three things to
 check: the client id (and that the client belongs to this account), that the redirect URI is
 registered on the client exactly as `http://127.0.0.1:<port>/oauth/callback`, and that the
-requested scopes are registered on the client — followed by the URL again.
+requested scopes are registered on the client — followed by the URL again. Before waiting, the
+login also performs a bounded, unauthenticated preflight GET of that same URL: if Cloudflare
+rejects the authorization request — for example an unknown client id or an unregistered scope —
+the CLI prints the error code, Cloudflare's own description and the concrete fix, instead of
+leaving the user with a blank browser tab.
 
 Opening a browser is best effort. If no opener works, the authorize URL is printed once and the
 login keeps waiting for the callback until `--timeout` expires (default 5m; exit 8 on timeout); an
