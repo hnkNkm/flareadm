@@ -36,6 +36,31 @@ goreleaser 2.17.1
 delve 1.27.1
 ```
 
+## Local credentials for live testing
+
+The CLI reads credentials only from the environment (or from a stored OAuth credential), so put a
+token in a **gitignored** `.env` at the repository root:
+
+```bash
+# .env  (ignored by git — see .gitignore)
+CLOUDFLARE_API_TOKEN=<your token>
+# or: FLAREADM_API_TOKEN=<your token>
+```
+
+`.envrc` loads that file with `dotenv_if_exists .env`, so any shell that direnv sets up — including
+the flake dev shell — sees the variable. `.env` must never be committed; keep real secrets out of
+`.env.example` and out of the repository generally.
+
+Two things must happen for a change to take effect:
+
+- run `direnv allow` after editing `.envrc` (a new or modified `.envrc` needs approval), and
+- re-enter a shell that already loaded the old environment (`cd .` or a new shell).
+
+A program that is **already running** with the old environment — a long-lived editor, a terminal
+tab, or an agent session — keeps the environment it started with and must be **restarted** to
+inherit the new variable; `direnv reload` only rebuilds the environment for shells that are about
+to start (`direnv exec`), it cannot inject a variable into a running process.
+
 ## Build, test, lint
 
 ```bash
