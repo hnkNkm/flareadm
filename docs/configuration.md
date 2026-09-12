@@ -143,6 +143,14 @@ to complete a login on WSL or another headless box. Without `$BROWSER`, the plat
 tried in order: `xdg-open` then `wslview` on Linux/WSL, `open` on macOS, and `rundll32
 url.dll,FileProtocolHandler` on Windows.
 
+Whatever opener is used, the authorize URL is printed on **stderr** before it is handed over
+(`Opening this URL in your browser …`), so it stays visible even when the browser window ends up
+blank; with `--no-browser` it is printed on stdout instead, and stdout is otherwise left clean. If
+no callback arrives within about 15 seconds, a one-time diagnostic names the three things to
+check: the client id (and that the client belongs to this account), that the redirect URI is
+registered on the client exactly as `http://127.0.0.1:<port>/oauth/callback`, and that the
+requested scopes are registered on the client — followed by the URL again.
+
 Opening a browser is best effort. If no opener works, the authorize URL is printed once and the
 login keeps waiting for the callback until `--timeout` expires (default 5m; exit 8 on timeout); an
 opener that starts but does not return is never waited on.
