@@ -28,7 +28,9 @@ func newLogin(rt *app.Runtime) *cobra.Command {
 			"  " + oauth.RedirectURI(oauth.DefaultCallbackHost, oauth.DefaultCallbackPort) + "\n\n" +
 			"Provide the client id with --client-id or the profile key oauth_client_id.\n" +
 			"Scopes default to the read-only set; --scopes picks an explicit set and\n" +
-			"--all-scopes requests the full catalog.\n\n" +
+			"--all-scopes requests the full catalog. List the scope ids with\n" +
+			"`flareadm auth scopes` - they are the values to register in the `scopes`\n" +
+			"array of the OAuth client.\n\n" +
 			"In CI use an API token instead (FLAREADM_API_TOKEN): login requires a\n" +
 			"terminal, and with --no-browser it prints the authorize URL once and waits\n" +
 			"for the callback until --timeout expires.\n\n" +
@@ -102,7 +104,8 @@ func newLogin(rt *app.Runtime) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&clientIDFlag, "client-id", "", "OAuth client id (falls back to the profile oauth_client_id)")
-	cmd.Flags().StringVar(&scopesFlag, "scopes", "", "comma-separated OAuth scopes to request")
+	cmd.Flags().StringVar(&scopesFlag, "scopes", "",
+		"comma-separated OAuth scope ids to request (list them with `flareadm auth scopes`)")
 	cmd.Flags().BoolVar(&allScopes, "all-scopes", false, "request every scope in the catalog")
 	cmd.Flags().BoolVar(&readOnly, "read-only", false, "request only read scopes (the default)")
 	cmd.Flags().StringVar(&callbackHost, "callback-host", oauth.DefaultCallbackHost, "host the loopback callback listens on")

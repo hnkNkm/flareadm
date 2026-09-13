@@ -84,6 +84,9 @@ type PurgeResult struct {
 type Verification struct {
 	ID     string `json:"id" yaml:"id"`
 	Status string `json:"status" yaml:"status"`
+	// ExpiresOn is only returned by the account-scoped verify endpoint
+	// (GET /accounts/{id}/tokens/verify); the user-scoped endpoint omits it.
+	ExpiresOn string `json:"expires_on,omitempty" yaml:"expires_on,omitempty"`
 }
 
 // UserDetails is the identity of the credential owner (GET /user).

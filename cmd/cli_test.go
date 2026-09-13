@@ -30,6 +30,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -10471,5 +10472,436 @@ func TestOAuthLoginBrowserPathRequiresTerminalAtCLILevel(t *testing.T) {
 	stub.mu.Unlock()
 	if requests != 0 {
 		t.Fatalf("no token request may happen: %d", requests)
+	}
+}
+
+// TestOAuthLoginAuthorizeURLUsesLiveScopeIDs pins the scope parameter end to end:
+// the requested live ids in the order given, then the protocol scopes, with no
+// colon-delimited id anywhere; the default set is the read-only catalog and a
+// live id outside our command mapping is accepted.
+func TestOAuthLoginAuthorizeURLUsesLiveScopeIDs(t *testing.T) {
+	stub := newOAuthStub(t)
+	stub.apply(t)
+	newHome(t)
+	t.Setenv("FLAREADM_API_TOKEN", "")
+	t.Setenv("CLOUDFLARE_API_TOKEN", "")
+
+	authorizeURL := func(t *testing.T, args ...string) *url.URL {
+		t.Helper()
+		out, errOut := &lockedBuffer{}, &lockedBuffer{}
+		done := make(chan int, 1)
+		argv := append([]string{"auth", "login", "--no-browser", "--client-id", "cli-client",
+			"--callback-port", strconv.Itoa(freePort(t)), "--timeout", "10s"}, args...)
+		go func() {
+			done <- Run(context.Background(), argv, strings.NewReader(""), out, errOut)
+		}()
+		line := waitForLine(t, out)
+		parsed, err := url.Parse(line)
+		if err != nil {
+			t.Fatalf("%v: authorize URL: %v", args, err)
+		}
+		resp, err := http.Get(line) //nolint:gosec // loopback test URL
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		if code := <-done; code != 0 {
+			t.Fatalf("%v: code=%d stderr=%q", args, code, errOut.String())
+		}
+		return parsed
+	}
+
+	scopesOf := func(t *testing.T, u *url.URL) []string {
+		t.Helper()
+		// url.Values decodes the scope parameter, so a colon-delimited id would
+		// show up here (the redirect_uri escapes are unrelated).
+		scopes := strings.Fields(u.Query().Get("scope"))
+		for _, id := range scopes {
+			if strings.Contains(id, ":") {
+				t.Fatalf("colon-delimited scope %q in %s", id, u.RawQuery)
+			}
+		}
+		return scopes
+	}
+
+	// Explicit scopes: live ids in order, then the protocol scopes.
+	explicit := scopesOf(t, authorizeURL(t, "--scopes", "zone.read,dns.write"))
+	if got, want := strings.Join(explicit, " "), "zone.read dns.write openid offline offline_access"; got != want {
+		t.Fatalf("scope = %q, want %q", got, want)
+	}
+
+	// Default: the read-only catalog, every id a live dot-delimited one.
+	defaultScopes := scopesOf(t, authorizeURL(t))
+	joined := strings.Join(defaultScopes, " ")
+	for _, want := range []string{"zone.read", "dns.read", "memberships.read", "notifications.read", "openid", "offline", "offline_access"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("default scope set is missing %q: %s", want, joined)
+		}
+	}
+	for _, unwanted := range []string{"dns.write", "page.write", "teams.write"} {
+		if strings.Contains(joined, unwanted) {
+			t.Fatalf("the default (read-only) set must not request %q: %s", unwanted, joined)
+		}
+	}
+
+	// A live id that is not part of our command mapping is still requestable.
+	extra := scopesOf(t, authorizeURL(t, "--scopes", "workers-r2.metadata_read"))
+	if !strings.Contains(strings.Join(extra, " "), "workers-r2.metadata_read") {
+		t.Fatalf("live id not requested: %v", extra)
+	}
+}
+
+// TestAuthScopesIsOfflineAndWellFormed pins `auth scopes`: it renders the catalog
+// in both formats, never touches the API, needs no credential, and its ids are
+// exactly the catalog ids (no protocol scopes).
+func TestAuthScopesIsOfflineAndWellFormed(t *testing.T) {
+	newHome(t)
+	t.Setenv("FLAREADM_API_TOKEN", "")
+	t.Setenv("CLOUDFLARE_API_TOKEN", "")
+	var hits int32
+	api := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		atomic.AddInt32(&hits, 1)
+		s, b := apiErr(500, 0, "the scopes command must not call the API")
+		return s, b
+	})
+
+	// Table: header plus one row per catalog id.
+	res := runCLI(t, "auth", "scopes", "--endpoint-url", api.srv.URL)
+	if res.code != 0 {
+		t.Fatalf("code=%d stderr=%q", res.code, res.stderr)
+	}
+	lines := strings.Split(strings.TrimRight(res.stdout, "\n"), "\n")
+	if len(lines) < 20 {
+		t.Fatalf("expected the catalog, got %d lines:\n%s", len(lines), res.stdout)
+	}
+	if !strings.HasPrefix(lines[0], "ID") || !strings.Contains(lines[0], "DEFAULT") || !strings.Contains(lines[0], "CATEGORY") {
+		t.Fatalf("unexpected header: %q", lines[0])
+	}
+	for _, want := range []string{"access.read", "zone.read", "cloudflare_one_and_zero_trust"} {
+		if !strings.Contains(res.stdout, want) {
+			t.Fatalf("catalog output is missing %q:\n%s", want, res.stdout)
+		}
+	}
+	if strings.Contains(res.stdout, "openid") || strings.Contains(res.stdout, "offline_access") {
+		t.Fatalf("protocol scopes must not be listed:\n%s", res.stdout)
+	}
+	rowCount := len(lines) - 1
+
+	// JSON: the same rows in the normalized envelope, ready to build a payload.
+	res = runCLI(t, "auth", "scopes", "--json", "--endpoint-url", api.srv.URL)
+	if res.code != 0 {
+		t.Fatalf("json: code=%d stderr=%q", res.code, res.stderr)
+	}
+	var envelope struct {
+		Version string         `json:"version"`
+		Data    []scopeRowJSON `json:"data"`
+		Meta    struct {
+			Count int `json:"count"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal([]byte(res.stdout), &envelope); err != nil {
+		t.Fatalf("json: %v\n%s", err, res.stdout)
+	}
+	if len(envelope.Data) != rowCount || envelope.Meta.Count != len(envelope.Data) {
+		t.Fatalf("json rows = %d (meta %d), table rows = %d", len(envelope.Data), envelope.Meta.Count, rowCount)
+	}
+	seen := map[string]bool{}
+	defaults := 0
+	for _, row := range envelope.Data {
+		if seen[row.ID] {
+			t.Fatalf("duplicate scope %q", row.ID)
+		}
+		seen[row.ID] = true
+		if strings.Contains(row.ID, ":") {
+			t.Fatalf("colon-delimited scope %q", row.ID)
+		}
+		if row.Name == "" || row.Category == "" {
+			t.Fatalf("scope %q is missing its name or category: %+v", row.ID, row)
+		}
+		if row.Default {
+			defaults++
+		}
+	}
+	if !seen["zone.read"] || defaults == 0 || defaults == len(envelope.Data) {
+		t.Fatalf("default column does not separate the two halves (defaults=%d, ids=%d)", defaults, len(envelope.Data))
+	}
+
+	// YAML.
+	res = runCLI(t, "auth", "scopes", "--output", "yaml", "--endpoint-url", api.srv.URL)
+	if res.code != 0 || !strings.Contains(res.stdout, "id: zone.read") || !strings.Contains(res.stdout, "count: ") {
+		t.Fatalf("yaml: code=%d stdout=%q", res.code, res.stdout)
+	}
+
+	// Filters.
+	res = runCLI(t, "auth", "scopes", "--read-only", "--json", "--endpoint-url", api.srv.URL)
+	if res.code != 0 {
+		t.Fatalf("--read-only: code=%d stderr=%q", res.code, res.stderr)
+	}
+	var readOnlyEnv struct {
+		Data []scopeRowJSON `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(res.stdout), &readOnlyEnv); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range readOnlyEnv.Data {
+		if !row.Default {
+			t.Fatalf("--read-only listed %q, which is not in the default set", row.ID)
+		}
+	}
+	if len(readOnlyEnv.Data) >= len(envelope.Data) {
+		t.Fatalf("--read-only returned %d rows, the full catalog has %d", len(readOnlyEnv.Data), len(envelope.Data))
+	}
+
+	res = runCLI(t, "auth", "scopes", "--category", "dns_and_zones", "--json", "--endpoint-url", api.srv.URL)
+	if res.code != 0 {
+		t.Fatalf("--category: code=%d stderr=%q", res.code, res.stderr)
+	}
+	var categoryEnv struct {
+		Data []scopeRowJSON `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(res.stdout), &categoryEnv); err != nil {
+		t.Fatal(err)
+	}
+	if len(categoryEnv.Data) == 0 {
+		t.Fatal("--category dns_and_zones returned nothing")
+	}
+	for _, row := range categoryEnv.Data {
+		if row.Category != "dns_and_zones" {
+			t.Fatalf("--category leaked %q (%s)", row.ID, row.Category)
+		}
+	}
+
+	res = runCLI(t, "auth", "scopes", "--category", "not_a_category")
+	if res.code != errors.CodeInvalid || !strings.Contains(res.stderr, "unknown category") || !strings.Contains(res.stderr, "dns_and_zones") {
+		t.Fatalf("bad category: code=%d stderr=%q", res.code, res.stderr)
+	}
+
+	res = runCLI(t, "auth", "scopes", "--all", "--json", "--endpoint-url", api.srv.URL)
+	if res.code != 0 {
+		t.Fatalf("--all: code=%d stderr=%q", res.code, res.stderr)
+	}
+	var allEnv struct {
+		Data []scopeRowJSON `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(res.stdout), &allEnv); err != nil {
+		t.Fatal(err)
+	}
+	if len(allEnv.Data) <= len(envelope.Data) || !hasID(allEnv.Data, "casb.read") {
+		t.Fatalf("--all returned %d rows (catalog has %d); a live id outside our mapping is missing",
+			len(allEnv.Data), len(envelope.Data))
+	}
+
+	res = runCLI(t, "auth", "scopes", "--all", "--read-only")
+	if res.code != errors.CodeInvalid || !strings.Contains(res.stderr, "mutually exclusive") {
+		t.Fatalf("--all --read-only: code=%d stderr=%q", res.code, res.stderr)
+	}
+
+	if hits := atomic.LoadInt32(&hits); hits != 0 {
+		t.Fatalf("auth scopes performed %d API request(s)", hits)
+	}
+}
+
+// scopeRowJSON mirrors one row of `auth scopes --json`.
+type scopeRowJSON struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Category string `json:"category"`
+	Default  bool   `json:"default"`
+}
+
+// hasID reports whether rows contains id.
+func hasID(rows []scopeRowJSON, id string) bool {
+	for _, row := range rows {
+		if row.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// TestAuthVerifyFallsBackToAccountOwnedToken: an account-owned API token is
+// rejected by the user-scoped check (HTTP 401); the account-scoped check must
+// then report the credential, name the check that produced the result, and show
+// the expiry the user endpoint cannot report.
+func TestAuthVerifyFallsBackToAccountOwnedToken(t *testing.T) {
+	newHome(t)
+	setToken(t, "acct-token")
+	var paths []string
+	accountVerify := `{"success":true,"errors":[],"messages":[{"code":10000,"message":"This API Token is valid and active","type":null}],` +
+		`"result":{"id":"4f33d3b1ae76bd7e3727df1f147a5ec7","status":"active","expires_on":"2026-09-18T23:59:59Z"}}`
+	api := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		paths = append(paths, method+" "+path)
+		switch path {
+		case "/user/tokens/verify":
+			s, b := apiErr(401, 1000, "Invalid API Token")
+			return s, b
+		case "/accounts/" + accountID + "/tokens/verify":
+			return 200, accountVerify
+		case "/accounts":
+			return 200, envelope([]map[string]any{{"id": accountID, "name": "acct", "type": "standard"}})
+		}
+		s, b := apiErr(404, 7000, "unhandled stub path")
+		return s, b
+	})
+
+	// Explicit account id.
+	res := runCLI(t, "auth", "verify", "--account-id", accountID, "--endpoint-url", api.srv.URL)
+	if res.code != 0 {
+		t.Fatalf("code=%d stderr=%q stdout=%q", res.code, res.stderr, res.stdout)
+	}
+	for _, want := range []string{"4f33d3b1ae76bd7e3727df1f147a5ec7", "active", "2026-09-18T23:59:59Z", "account-owned token", "EXPIRES", "SCOPE"} {
+		if !strings.Contains(res.stdout, want) {
+			t.Fatalf("output is missing %q:\n%s", want, res.stdout)
+		}
+	}
+	if strings.Contains(strings.ToLower(res.stderr), "expired") || strings.Contains(res.stderr, "Invalid API Token") {
+		t.Fatalf("a rejected user-scoped check must not leak into the result: %q", res.stderr)
+	}
+	if strings.Contains(res.stdout, "This API Token is valid and active") {
+		t.Fatalf("the server message belongs in diagnostics only:\n%s", res.stdout)
+	}
+	if got, want := strings.Join(paths, ", "), "GET /user/tokens/verify, GET /accounts/"+accountID+"/tokens/verify"; got != want {
+		t.Fatalf("request path = %s, want %s", got, want)
+	}
+
+	// The documented resolution order also works without --account-id.
+	paths = nil
+	res = runCLI(t, "auth", "verify", "--endpoint-url", api.srv.URL)
+	if res.code != 0 || !strings.Contains(res.stdout, "account-owned token") {
+		t.Fatalf("discovery fallback: code=%d stdout=%q stderr=%q", res.code, res.stdout, res.stderr)
+	}
+	if !strings.Contains(strings.Join(paths, ", "), "GET /accounts, GET /accounts/"+accountID+"/tokens/verify") {
+		t.Fatalf("discovery path = %v", paths)
+	}
+
+	// The marker and the expiry travel with the non-table formats too.
+	res = runCLI(t, "auth", "verify", "--account-id", accountID, "--json", "--endpoint-url", api.srv.URL)
+	if res.code != 0 {
+		t.Fatalf("json: code=%d stderr=%q", res.code, res.stderr)
+	}
+	var payload struct {
+		Data struct {
+			ID        string `json:"id"`
+			Status    string `json:"status"`
+			ExpiresOn string `json:"expires_on"`
+			Scope     string `json:"scope"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(res.stdout), &payload); err != nil {
+		t.Fatalf("json: %v\n%s", err, res.stdout)
+	}
+	if payload.Data.Scope != "account-owned token" || payload.Data.ExpiresOn != "2026-09-18T23:59:59Z" || payload.Data.Status != "active" {
+		t.Fatalf("json payload = %+v", payload.Data)
+	}
+	if strings.Contains(res.stdout, "This API Token is valid and active") {
+		t.Fatalf("machine output must not carry the server message:\n%s", res.stdout)
+	}
+
+	// --verbose is where the server's own message belongs.
+	res = runCLI(t, "auth", "verify", "--account-id", accountID, "--verbose", "--endpoint-url", api.srv.URL)
+	if res.code != 0 {
+		t.Fatalf("verbose: code=%d stderr=%q", res.code, res.stderr)
+	}
+	if !strings.Contains(res.stderr, "This API Token is valid and active") {
+		t.Fatalf("--verbose must show the server message: %q", res.stderr)
+	}
+}
+
+// TestAuthVerifyBothChecksFail: exit 3, both endpoints named, and no claim that
+// the credential is invalid — it simply could not be verified.
+func TestAuthVerifyBothChecksFail(t *testing.T) {
+	newHome(t)
+	setToken(t, "some-token")
+	var paths []string
+	api := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		paths = append(paths, path)
+		switch path {
+		case "/user/tokens/verify":
+			s, b := apiErr(401, 1000, "Invalid API Token")
+			return s, b
+		case "/accounts/" + accountID + "/tokens/verify":
+			s, b := apiErr(403, 9109, "Unauthorized to access requested resource")
+			return s, b
+		}
+		s, b := apiErr(404, 7000, "unhandled stub path")
+		return s, b
+	})
+	res := runCLI(t, "auth", "verify", "--account-id", accountID, "--endpoint-url", api.srv.URL)
+	if res.code != errors.CodeAuth {
+		t.Fatalf("code=%d, want 3 (stderr=%q)", res.code, res.stderr)
+	}
+	for _, want := range []string{"GET /user/tokens/verify", "GET /accounts/" + accountID + "/tokens/verify", "could not be verified"} {
+		if !strings.Contains(res.stderr, want) {
+			t.Fatalf("stderr is missing %q: %q", want, res.stderr)
+		}
+	}
+	if strings.Contains(strings.ToLower(res.stderr), "expired") {
+		t.Fatalf("a failed verification must not read as an expired credential: %q", res.stderr)
+	}
+	if got := strings.Join(paths, ", "); got != "/user/tokens/verify, /accounts/"+accountID+"/tokens/verify" {
+		t.Fatalf("paths = %s", got)
+	}
+}
+
+// TestAuthVerifyNoAccountResolvableSkipsFallback: without a resolvable account
+// there is nothing to fall back to, so the original user-scoped failure is
+// reported and the account-scoped endpoint is never called.
+func TestAuthVerifyNoAccountResolvableSkipsFallback(t *testing.T) {
+	newHome(t)
+	setToken(t, "some-token")
+	var paths []string
+	api := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		paths = append(paths, path)
+		switch path {
+		case "/user/tokens/verify":
+			s, b := apiErr(401, 1000, "Invalid API Token")
+			return s, b
+		case "/accounts":
+			return 200, envelope([]map[string]any{})
+		}
+		s, b := apiErr(404, 7000, "unhandled stub path")
+		return s, b
+	})
+	res := runCLI(t, "auth", "verify", "--endpoint-url", api.srv.URL)
+	if res.code != errors.CodeAuth {
+		t.Fatalf("code=%d, want 3 (stderr=%q)", res.code, res.stderr)
+	}
+	if !strings.Contains(res.stderr, "Invalid API Token") {
+		t.Fatalf("the original failure must be reported: %q", res.stderr)
+	}
+	for _, path := range paths {
+		if strings.HasSuffix(path, "/tokens/verify") && path != "/user/tokens/verify" {
+			t.Fatalf("no account-scoped check may run without an account: %v", paths)
+		}
+	}
+}
+
+// TestAuthVerifyOtherFailuresDoNotFallBack: only 401/403 select the account
+// check; a server error is returned as-is.
+func TestAuthVerifyOtherFailuresDoNotFallBack(t *testing.T) {
+	newHome(t)
+	setToken(t, "some-token")
+	var paths []string
+	api := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		paths = append(paths, path)
+		if path == "/user/tokens/verify" {
+			s, b := apiErr(502, 0, "Bad gateway")
+			return s, b
+		}
+		s, b := apiErr(404, 7000, "unhandled stub path")
+		return s, b
+	})
+	res := runCLI(t, "auth", "verify", "--account-id", accountID, "--endpoint-url", api.srv.URL)
+	if res.code == 0 {
+		t.Fatalf("a 502 must not verify the credential (stdout=%q)", res.stdout)
+	}
+	// The transport layer may retry the 5xx; what matters is that the account
+	// check is never attempted for a failure that says nothing about the owner.
+	for _, path := range paths {
+		if path != "/user/tokens/verify" {
+			t.Fatalf("paths = %v, want only the user-scoped check", paths)
+		}
+	}
+	if !strings.Contains(res.stderr, "502") {
+		t.Fatalf("the transport failure must be reported: %q", res.stderr)
 	}
 }
