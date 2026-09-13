@@ -1,11 +1,11 @@
 # OAuth login for FlareADM
 
-**Status: implemented in v1.1.0 (Phases 1-4); Phase 0 live verification and the client-id decision remain open.** FlareADM
+**Status: implemented (Phases 1-4) in the v1.1 line; Phase 0 (live scope verification) completed 2026-09-13 — the catalog is generated from the live 385-id list.** FlareADM
 authenticates with Cloudflare API tokens and additionally supports a stored OAuth credential
 obtained with `flareadm auth login` (see `docs/configuration.md`); environment variables still take
 precedence. The credential store, the resolution-chain fallback, the PKCE loopback flow with
 proactive refresh and 401 refresh-and-retry, `auth login`/`logout`/`status`/`verify`, and
-scope-aware 403 guidance ship in v1.1.0. The open questions and risks in §13 (Q1, Q2, Q3, Q4–Q11)
+scope-aware 403 guidance ship in v1.1.0. The open questions and risks in §13 (Q1, Q3, Q4–Q11)
 remain open.
 
 Every factual claim about Cloudflare cites the URL it came from. Claims that the public
@@ -312,6 +312,14 @@ Two layers exist:
    `GET /oauth/scopes` (with an API token) returns the scope list to use when creating a client,
    and scope names "correspond to Cloudflare API token permission names" (E1). The public
    permission list is <https://developers.cloudflare.com/fundamentals/api/reference/permissions/>.
+
+**Resolved (Phase 0, 2026-09-13).** `GET /oauth/scopes` was read on the live account and recorded in
+`cmd/auth/scopes_generated.go`: **385 ids in 13 categories**, all dot-delimited (`zone.read`,
+`dns.read`, `workers-scripts.write`, …). The colon-delimited `cf` names in layer 1 above are **not**
+live ids and cannot be requested; the shipped catalog maps each command group onto live ids
+(`scopeGroups` in `cmd/auth/scopes.go`) and `--scopes` validates against the generated list.
+Regenerate with `go run ./tools/scopegen -in <scopes.json> -out cmd/auth/scopes_generated.go`;
+`flareadm auth scopes` prints the same list.
 
 Scope properties:
 
@@ -739,9 +747,11 @@ against a live account before implementation is claimed complete:
   private client and passes `--client-id` (works today, more setup); (b) the project registers one
   public client (needs a verified Client URL, is permanently public, E1) so login works out of the
   box. (b) is the better user experience and the worse governance decision; it needs an owner.
-- **Q2 (verification, blocking for scope defaults): the authoritative scope list.** Run
-  `GET /oauth/scopes` on a scratch account and resolve every *unknown* row in §5 Q5. Until then the
-  §5 candidate superset is a guess.
+- **Q2 (verification): the authoritative scope list — resolved 2026-09-13.** `GET /oauth/scopes` was
+  read on the live account and recorded in `cmd/auth/scopes_generated.go` (**385 dot-delimited ids
+  in 13 categories**, regenerated with `tools/scopegen`). The pre-0.4 colon-delimited names are not
+  live ids; every id the CLI requests is checked against the generated list
+  (`TestScopeCatalogIDsExistLive`) and `--scopes` accepts any live id.
 - **Q3 (decision): default scope set.** `--read-only` by default is safer but means every write
   command fails until the user logs in again with more scopes. Wrangler's default is the opposite
   (all scopes, E4). The proposal above defaults to read-only and documents the re-login; the user

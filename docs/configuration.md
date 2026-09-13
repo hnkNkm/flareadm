@@ -135,9 +135,15 @@ Login flags:
 --timeout <duration>    how long to wait for the callback (default 5m)
 ```
 
-The default scope set is read-only; write administration needs `--all-scopes`. Scope names are
-validated against a candidate catalog; the Phase 0 spike in [oauth.md](oauth.md) reconciles it
-with Cloudflare's per-account `GET /oauth/scopes`, so the catalog is not authoritative yet.
+The default scope set is read-only; write administration needs `--all-scopes`. Scope ids are
+**dot-delimited**, and the authoritative list is the account's live `GET /oauth/scopes` response:
+**385 ids in 13 categories**, recorded in `cmd/auth/scopes_generated.go` and regenerable with
+`tools/scopegen`. List them with `flareadm auth scopes` (`--read-only` for the 17 ids `auth login`
+requests by default, `--all` for every live id, `--category` to filter; add `--json` for scripting).
+`--all-scopes` requests the 39 ids the CLI maps onto its command groups, and `--scopes` accepts any
+live id — an unknown one is rejected with a suggestion. `auth verify` checks an API token with
+`GET /user/tokens/verify` and falls back to `GET /accounts/{account_id}/tokens/verify` when the
+token is account-owned, printing `ID STATUS EXPIRES SCOPE` with the marker `account-owned token`.
 
 Storage: the credential is a per-profile JSON file under the `oauth/` subdirectory of the
 configuration directory — `$XDG_CONFIG_HOME/flareadm/oauth/<profile>.json` (falling back to

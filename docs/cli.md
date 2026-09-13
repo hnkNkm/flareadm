@@ -74,6 +74,7 @@ flareadm
 │   └── delete
 ├── auth
 │   ├── verify
+│   ├── scopes
 │   ├── login
 │   ├── logout
 │   └── status
@@ -243,7 +244,9 @@ Account-scoped groups (`r2`, `kv`) resolve the account through the standard reso
 secrets and never appear in diagnostics or errors.
 
 `auth login` requests a read-only scope set by default; `--all-scopes` requests the full scope
-catalog (see [configuration.md](configuration.md)). `auth logout` revokes and deletes the stored
+catalog (see [configuration.md](configuration.md)). `auth scopes` lists the live scope ids the
+catalog is built from — the ids to select when registering the OAuth client, and the ones `--scopes`
+accepts. `auth logout` revokes and deletes the stored
 credential (`--local` skips revocation); `auth status` reports which credential source wins.
 
 ## Global options

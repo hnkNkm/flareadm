@@ -226,6 +226,13 @@ authorize URL — printed on stderr before the browser handoff, and on stdout wi
 and prints a one-time diagnostic after about 15 seconds without a callback, naming the client-id,
 redirect-URI and scope checks to make. No API or flag changes.
 
+Live-verified scope catalog (2026-09-13, unreleased): the scope ids are generated from the account's
+`GET /oauth/scopes` list — 385 dot-delimited ids in 13 categories, regenerable with `tools/scopegen`
+— so `auth login` defaults to the 17 read-only ids and `--all-scopes` requests the 39 ids the CLI
+maps to its command groups. It adds `auth scopes` to print the catalog, and `auth verify` falls back
+to the account-scoped `GET /accounts/{account_id}/tokens/verify` for account-owned tokens, reporting
+`ID STATUS EXPIRES SCOPE`. No API or flag changes.
+
 Delivered:
 
 - `auth login` / `auth logout` / `auth status`, plus `auth verify` for OAuth credentials;
@@ -238,8 +245,6 @@ Delivered:
 
 Still open:
 
-- Phase 0 live scope verification — the catalog in `cmd/auth/scopes.go` ships as a candidate set
-  (`oauth.md` §5 Q5, §13 Q2);
 - the public-vs-private OAuth client decision (§13 Q1);
 - the default scope set remains read-only (§13 Q3);
 - optional device flow and OS keychain storage.
