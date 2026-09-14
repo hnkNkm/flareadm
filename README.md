@@ -14,7 +14,7 @@ administration.
 > FlareADM is an independent open-source project and is not affiliated with or endorsed by
 > Cloudflare, Inc. Cloudflare product and service names are used only to describe compatibility.
 
-**Status:** v0.1 implemented, unreleased.
+**Status:** v1.1.2 is the latest published release (2026-09-14).
 
 ## Quickstart
 
@@ -24,6 +24,10 @@ Build the binary:
 nix build
 ./result/bin/flareadm
 ```
+
+Prefer short typing? See the alias recipes in [docs/cli.md](docs/cli.md#short-name) —
+`alias fa=flareadm` (zsh) or `complete -o default -F __start_flareadm fa` (bash). The Nix build
+also installs an `fa` symlink next to the binary.
 
 Set up the development environment:
 

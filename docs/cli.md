@@ -459,6 +459,34 @@ flareadm completion zsh
 `flareadm completion bash|zsh|fish|powershell` all emit a working script. The full command
 surface is also generated into `docs/commands.md`.
 
+### Short name
+
+`flareadm` is the canonical name and stays that way: the documented command paths, the generated
+reference, the release archives and the Nix package all depend on it. Any short name works as an
+alias — `fa` is used as the example here.
+
+| Shell | Alias | Completion |
+| --- | --- | --- |
+| zsh | `alias fa=flareadm` | nothing more is needed: zsh substitutes the alias before completion unless `COMPLETE_ALIASES` is set, and the generated script handles that case |
+| bash | `alias fa=flareadm` | add `complete -o default -F __start_flareadm fa` — the generated bash script keys completions to the literal name |
+| fish | `abbr -a fa flareadm` | the abbreviation expands on the command line, so normal completion applies; `complete -c fa -w flareadm` also works |
+| PowerShell | — | `Register-ArgumentCompleter -CommandName fa -ScriptBlock ${__flareadmCompleterBlock}` |
+
+In scripts and CI prefer a **function** over an alias: aliases do not expand in non-interactive
+bash. `fa() { flareadm "$@"; }` works in bash and zsh; in fish use
+`function fa; flareadm $argv; end`.
+
+The Nix package installs a convenience symlink, `fa`, next to `flareadm` in the store output, so a
+short name works without any shell configuration once the package is on `PATH`. The symlink is a
+second entry point to the same binary: usage lines and `--help` still print `flareadm`, because the
+program does not read `argv[0]` — that is deliberate, not a bug.
+
+This mirrors what upstreams do: Kubernetes documents `alias k=kubectl` plus
+`complete -o default -F __start_kubectl k`, and none of the comparable CLIs (`kubectl`, `gh`,
+`terraform`, `docker`, `op`) ships a second binary for short typing. `fa`, `fadm`, `fl`, `flr` and
+`fad` are all free as executable names in nixpkgs, Homebrew and Debian — none of them installs a
+`/usr/bin` entry with such a name.
+
 ## AI-agent compatibility
 
 AI agents are a first-class consumer, but FlareADM remains a normal CLI. Required

@@ -44,6 +44,14 @@
             "${repo}/internal/version.Version=${version}"
           ];
 
+          # Convenience symlink for the short name the docs recommend. The
+          # canonical binary stays `flareadm` (mainProgram below), and the
+          # program does not read argv[0], so help and usage lines still say
+          # `flareadm` when invoked as `fa`.
+          postInstall = ''
+            ln -s "$out/bin/flareadm" "$out/bin/fa"
+          '';
+
           meta = {
             description = "Fast, standalone administration CLI for Cloudflare";
             homepage = "https://${repo}";
