@@ -41,6 +41,13 @@ jobs:
       - name: Command reference is up to date
         run: nix develop -c bash -c 'go run ./tools/docgen | diff -u docs/commands.md -'
 
+      - name: Completion scripts are up to date
+        run: |
+          nix develop -c bash -c 'go run . completion bash | diff -u completions/bash.sh -'
+          nix develop -c bash -c 'go run . completion zsh | diff -u completions/zsh.sh -'
+          nix develop -c bash -c 'go run . completion fish | diff -u completions/fish.sh -'
+          nix develop -c bash -c 'go run . completion powershell | diff -u completions/powershell.ps1 -'
+
       - name: Vulnerability scan
         run: nix develop -c govulncheck ./...
 

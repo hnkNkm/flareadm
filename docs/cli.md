@@ -459,6 +459,12 @@ flareadm completion zsh
 `flareadm completion bash|zsh|fish|powershell` all emit a working script. The full command
 surface is also generated into `docs/commands.md`.
 
+Completion covers subcommand and flag **names** as well as **values**: enumerated flag values
+(output formats, LOC directions, scope categories and the like), profile names, and — best effort —
+zone names and ids. Value completion is offline-safe by contract: it never prompts, makes a single
+attempt with a short deadline and no retries, and stays silent when there is no credential, no
+network or no match.
+
 ### Short name
 
 `flareadm` is the canonical name and stays that way: the documented command paths, the generated
