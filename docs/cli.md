@@ -465,6 +465,11 @@ zone names and ids. Value completion is offline-safe by contract: it never promp
 attempt with a short deadline and no retries, and stays silent when there is no credential, no
 network or no match.
 
+Completion has been driven in real shells, not only in unit tests: zsh and bash interactively in a
+pty (including the alias recipes below), while fish and PowerShell were verified through the
+engines their own TAB handling uses — `complete -C` and `TabExpansion2` — because an interactive
+completion menu could not be captured for those two in the test environment.
+
 ### Short name
 
 `flareadm` is the canonical name and stays that way: the documented command paths, the generated
@@ -474,7 +479,7 @@ alias — `fa` is used as the example here.
 | Shell | Alias | Completion |
 | --- | --- | --- |
 | zsh | `alias fa=flareadm` | nothing more is needed: zsh substitutes the alias before completion unless `COMPLETE_ALIASES` is set, and the generated script handles that case |
-| bash | `alias fa=flareadm` | add `complete -o default -F __start_flareadm fa` — the generated bash script keys completions to the literal name |
+| bash | `alias fa=flareadm` | add `complete -o default -F __start_flareadm fa` — the generated bash script keys completions to the literal name. **Requires the `bash-completion` package** (the script calls `_get_comp_words_by_ref`/`_init_completion`): without it TAB prints `bash: _get_comp_words_by_ref: command not found` twice and falls back to filename completion, for the canonical name as much as for the alias. Install it with `apt install bash-completion` on Debian/Ubuntu, or add `nixpkgs#bash-completion` to the shell (`nix shell nixpkgs#bash-completion`) on NixOS and nix. |
 | fish | `abbr -a fa flareadm` | the abbreviation expands on the command line, so normal completion applies; `complete -c fa -w flareadm` also works |
 | PowerShell | — | `Register-ArgumentCompleter -CommandName fa -ScriptBlock ${__flareadmCompleterBlock}` |
 
