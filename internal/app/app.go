@@ -391,18 +391,51 @@ func (rt *Runtime) CloudClient() (*cloudflare.Client, error) {
 	if rt.client != nil {
 		return rt.client, nil
 	}
+	client, err := rt.newClient(clientSpec{raw: rt.RawFlag, logger: rt.logger, refresh401: true})
+	if err != nil {
+		return nil, err
+	}
+	rt.client = client
+	return client, nil
+}
+
+// CompletionClient builds a Cloudflare client for a shell completion request:
+// the same credential chain and endpoint as CloudClient, but a single attempt
+// (nothing may queue behind backoff while a prompt waits), no diagnostics sink
+// and normalized output. It is never cached, so a completion can never change
+// the client the command itself uses.
+//
+// A failure to resolve a credential is returned as-is; the caller treats it as
+// "no suggestions".
+func (rt *Runtime) CompletionClient() (*cloudflare.Client, error) {
+	return rt.newClient(clientSpec{maxAttempts: 1})
+}
+
+// clientSpec selects how a client differs from the default one. The zero value
+// keeps the command client's behaviour: default retry policy, normalized
+// output, no diagnostics, no refresh hook.
+type clientSpec struct {
+	raw         bool            // --raw: carry the closest API response through
+	logger      *logging.Logger // nil silences the client
+	maxAttempts int             // total attempts incl. the first; <=0 keeps the default
+	refresh401  bool            // refresh an OAuth credential once after HTTP 401
+}
+
+// newClient resolves the credential and builds the Cloudflare client described
+// by spec.
+func (rt *Runtime) newClient(spec clientSpec) (*cloudflare.Client, error) {
 	cred, err := rt.Credential()
 	if err != nil {
 		return nil, err
 	}
 	rt.ProtectSecret(cred.Token)
-	if rt.logger != nil {
-		rt.logger.SetToken(cred.Token)
-		rt.logger.Infof("profile %q; token source: %s; endpoint: %s",
+	if spec.logger != nil {
+		spec.logger.SetToken(cred.Token)
+		spec.logger.Infof("profile %q; token source: %s; endpoint: %s",
 			rt.ActiveProfileName(), cred.Source, endpointLabel(rt.EndpointURLFlag))
 	}
 	var refreshHook func(ctx context.Context) (string, error)
-	if rt.credentialKind == credentialKindOAuth {
+	if spec.refresh401 && rt.credentialKind == credentialKindOAuth {
 		// Only stored OAuth credentials can be refreshed (docs/oauth.md §9).
 		refreshHook = func(ctx context.Context) (string, error) {
 			ctx, cancel := context.WithTimeout(ctx, rt.oauthRequestTimeout())
@@ -410,20 +443,16 @@ func (rt *Runtime) CloudClient() (*cloudflare.Client, error) {
 			return rt.refreshStoredOAuth(ctx)
 		}
 	}
-	client, err := cloudflare.New(cloudflare.Options{
+	return cloudflare.New(cloudflare.Options{
 		Token:        cred.Token,
 		Endpoint:     rt.EndpointURLFlag,
 		Timeout:      rt.TimeoutFlag,
-		RawMode:      rt.RawFlag,
+		MaxAttempts:  spec.maxAttempts,
+		RawMode:      spec.raw,
 		Policy:       rt.Policy(),
-		Logger:       rt.logger,
+		Logger:       spec.logger,
 		RefreshToken: refreshHook,
 	})
-	if err != nil {
-		return nil, err
-	}
-	rt.client = client
-	return client, nil
 }
 
 func endpointLabel(endpoint string) string {

@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/hnkNkm/flareadm/cmd/internal/cmdutil"
 	"github.com/hnkNkm/flareadm/internal/app"
 	"github.com/hnkNkm/flareadm/internal/cloudflare"
 	"github.com/hnkNkm/flareadm/internal/errors"
@@ -42,6 +43,7 @@ func addRuleFlags(rt *app.Runtime, cmd *cobra.Command, f *ruleFlagValues) {
 	f.rt = rt
 	cmd.Flags().StringVar(&f.Name, "name", "", "rule name (required on create)")
 	cmd.Flags().StringVar(&f.Action, "action", "", "rule action: "+strings.Join(cloudflare.GatewayRuleActionValues, ", "))
+	_ = cmd.RegisterFlagCompletionFunc("action", cmdutil.EnumsOf(cloudflare.GatewayRuleActionValues))
 	cmd.Flags().StringVar(&f.Description, "description", "", "rule description")
 	cmd.Flags().StringVar(&f.Traffic, "traffic", "", "traffic expression (for example any(net 192.0.2.0/24))")
 	cmd.Flags().StringVar(&f.Identity, "identity", "", "identity expression (for example any(identity.email matches \"@example.com\"))")

@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/hnkNkm/flareadm/cmd/internal/cmdutil"
 	"github.com/hnkNkm/flareadm/internal/app"
 	"github.com/hnkNkm/flareadm/internal/cloudflare"
 	"github.com/hnkNkm/flareadm/internal/errors"
@@ -63,6 +64,8 @@ func newList(rt *app.Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&nameFlag, "name", "", "only zones with this exact name")
 	cmd.Flags().StringVar(&statusFlag, "status", "", "only zones with this status (initializing, pending, active, moved, deleted, deactivated)")
 	cmd.Flags().StringVar(&typeFlag, "type", "", "only zones of this type (full, partial)")
+	_ = cmd.RegisterFlagCompletionFunc("status", cmdutil.EnumsOf(zoneStatuses))
+	_ = cmd.RegisterFlagCompletionFunc("type", cmdutil.Enums("full", "partial"))
 	return cmd
 }
 
@@ -75,6 +78,8 @@ func newGet(rt *app.Runtime) *cobra.Command {
 		Long: "Show one zone. Accepts a zone name or id: the positional argument,\n" +
 			"--zone, or the profile default_zone.",
 		Args: cobra.MaximumNArgs(1),
+		// The positional is a zone reference, so it completes like --zone.
+		ValidArgsFunction: cmdutil.Zones(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ref := ""
 			if len(args) == 1 {

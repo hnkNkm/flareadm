@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/hnkNkm/flareadm/cmd/internal/cmdutil"
 	"github.com/hnkNkm/flareadm/internal/app"
 	"github.com/hnkNkm/flareadm/internal/auth"
 	"github.com/hnkNkm/flareadm/internal/config"
@@ -120,7 +121,8 @@ func newGet(rt *app.Runtime) *cobra.Command {
 		Long: "Print the value of KEY (account_id, api_token_env, default_zone or\n" +
 			"oauth_client_id) for the\n" +
 			"active profile, or the whole profile when KEY is omitted.",
-		Args: cobra.MaximumNArgs(1),
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: cmdutil.EnumsOf(profile.ConfigKeys),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := rt.Config()
 			if err != nil {
@@ -166,7 +168,8 @@ func newSet(rt *app.Runtime) *cobra.Command {
 		Long: "Set KEY (account_id, api_token_env, default_zone or oauth_client_id) to VALUE\n" +
 			"in the active\n" +
 			"profile, creating the profile when it does not exist.",
-		Args: cobra.ExactArgs(2),
+		Args:              cobra.ExactArgs(2),
+		ValidArgsFunction: cmdutil.EnumsOf(profile.ConfigKeys),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			key, value := args[0], args[1]
 			if !validKey(key) {

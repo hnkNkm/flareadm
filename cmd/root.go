@@ -21,6 +21,7 @@ import (
 	"github.com/hnkNkm/flareadm/cmd/dns"
 	"github.com/hnkNkm/flareadm/cmd/healthcheck"
 	"github.com/hnkNkm/flareadm/cmd/hyperdrive"
+	"github.com/hnkNkm/flareadm/cmd/internal/cmdutil"
 	"github.com/hnkNkm/flareadm/cmd/kv"
 	"github.com/hnkNkm/flareadm/cmd/loadbalancer"
 	"github.com/hnkNkm/flareadm/cmd/logpush"
@@ -87,6 +88,16 @@ func NewCommand(rt *app.Runtime) *cobra.Command {
 	root.PersistentFlags().BoolVar(&rt.DebugFlag, "debug", false, "debug diagnostics on stderr (credentials redacted)")
 	root.PersistentFlags().DurationVar(&rt.TimeoutFlag, "timeout", 0, "per-request attempt timeout (default: 30s)")
 	root.PersistentFlags().StringVar(&rt.EndpointURLFlag, "endpoint-url", "", "Cloudflare API base URL (default: https://api.cloudflare.com/client/v4/)")
+
+	// Value completion for the global flags. They are persistent flags of the
+	// root command, and cobra keys flag completion by the flag itself, so one
+	// registration each covers every subcommand. Registration cannot fail for a
+	// flag that was just declared on this command; the completion tests fail
+	// loudly if it ever does.
+	_ = root.RegisterFlagCompletionFunc("output", cmdutil.OutputFormats())
+	_ = root.RegisterFlagCompletionFunc("profile", cmdutil.Profiles(rt))
+	_ = root.RegisterFlagCompletionFunc("account-id", cmdutil.AccountIDs(rt))
+	_ = root.RegisterFlagCompletionFunc("zone", cmdutil.Zones(rt))
 
 	root.AddCommand(versionCmd(rt))
 	root.AddCommand(configure.New(rt))

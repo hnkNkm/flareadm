@@ -26,6 +26,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/hnkNkm/flareadm/cmd/internal/cmdutil"
 	"github.com/hnkNkm/flareadm/internal/app"
 	"github.com/hnkNkm/flareadm/internal/cloudflare"
 	"github.com/hnkNkm/flareadm/internal/errors"
@@ -55,7 +56,8 @@ func newRequest(rt *app.Runtime) *cobra.Command {
 			"  flareadm api request GET /zones\n" +
 			"  flareadm api request POST /zones/<zone-id>/purge_cache --body '{\"purge_everything\": true}'\n" +
 			"  flareadm api request POST /zones/<zone-id>/dns_records --body @request.json",
-		Args: cobra.ExactArgs(2),
+		Args:              cobra.ExactArgs(2),
+		ValidArgsFunction: cmdutil.EnumsOf(methods),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			method := strings.ToUpper(args[0])
 			if !contains(methods, method) {

@@ -73,6 +73,7 @@ func newRulesetList(rt *app.Runtime) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&phaseFlag, "phase", "", "only this WAF phase")
+	_ = cmd.RegisterFlagCompletionFunc("phase", cmdutil.EnumsOf(wafPhases))
 	return cmd
 }
 

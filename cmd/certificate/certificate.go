@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/hnkNkm/flareadm/cmd/internal/cmdutil"
 	"github.com/hnkNkm/flareadm/internal/app"
 	"github.com/hnkNkm/flareadm/internal/cloudflare"
 	"github.com/hnkNkm/flareadm/internal/errors"
@@ -127,6 +128,7 @@ func newList(rt *app.Runtime) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&statusFlag, "status", "", "only certificates with this status (active, expired, deleted, pending, initializing)")
+	_ = cmd.RegisterFlagCompletionFunc("status", cmdutil.EnumsOf(statusValues))
 	return cmd
 }
 
@@ -218,6 +220,9 @@ func newCreate(rt *app.Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&bundleMethod, "bundle-method", "", "bundle method (ubiquitous, optimal, force)")
 	cmd.Flags().StringVar(&deploy, "deploy", "", "deploy environment (staging, production)")
 	cmd.Flags().StringVar(&certType, "type", "", "certificate type (legacy_custom, sni_custom)")
+	_ = cmd.RegisterFlagCompletionFunc("bundle-method", cmdutil.EnumsOf(bundleMethods))
+	_ = cmd.RegisterFlagCompletionFunc("deploy", cmdutil.EnumsOf(deployValues))
+	_ = cmd.RegisterFlagCompletionFunc("type", cmdutil.EnumsOf(typeValues))
 	return cmd
 }
 

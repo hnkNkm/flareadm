@@ -209,6 +209,7 @@ func newRegistrationList(rt *app.Runtime) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&q.Direction, "direction", "", "sort direction (asc, desc)")
+	_ = cmd.RegisterFlagCompletionFunc("direction", cmdutil.Enums("asc", "desc"))
 	cmd.Flags().StringVar(&q.SortBy, "sort-by", "", "sort key (for example domain_name)")
 	return cmd
 }

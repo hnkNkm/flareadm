@@ -133,6 +133,7 @@ func newTunnelCreate(rt *app.Runtime) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&nameFlag, "name", "", "tunnel name (required)")
 	cmd.Flags().StringVar(&configSrcFlag, "config-src", "", "configuration source (local, cloudflare)")
+	_ = cmd.RegisterFlagCompletionFunc("config-src", cmdutil.EnumsOf(cloudflare.TunnelConfigSrcValues))
 	cmd.Flags().StringVar(&secretFlag, "tunnel-secret", "", "tunnel secret as @file only")
 	return cmd
 }

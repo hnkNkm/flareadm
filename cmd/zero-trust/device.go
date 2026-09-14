@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/hnkNkm/flareadm/cmd/internal/cmdutil"
 	"github.com/hnkNkm/flareadm/internal/app"
 	"github.com/hnkNkm/flareadm/internal/cloudflare"
 	"github.com/hnkNkm/flareadm/internal/errors"
@@ -144,9 +145,12 @@ func newPhysicalDeviceList(rt *app.Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&f.Search, "search", "", "search devices by name, serial number or user email")
 	cmd.Flags().StringVar(&idsFlag, "id", "", "comma-separated device ids to include")
 	cmd.Flags().StringVar(&f.ActiveRegistrations, "active-registrations", "", "filter by active registration: "+strings.Join(cloudflare.PhysicalDeviceActiveRegistrationValues, ", "))
+	_ = cmd.RegisterFlagCompletionFunc("active-registrations", cmdutil.EnumsOf(cloudflare.PhysicalDeviceActiveRegistrationValues))
 	cmd.Flags().StringVar(&f.LastSeenUser, "last-seen-user", "", "filter by last seen user (email)")
 	cmd.Flags().StringVar(&f.SortBy, "sort-by", "", "sort key: "+strings.Join(cloudflare.PhysicalDeviceSortValues, ", "))
+	_ = cmd.RegisterFlagCompletionFunc("sort-by", cmdutil.EnumsOf(cloudflare.PhysicalDeviceSortValues))
 	cmd.Flags().StringVar(&f.SortOrder, "sort-order", "", "sort order: asc, desc")
+	_ = cmd.RegisterFlagCompletionFunc("sort-order", cmdutil.Enums("asc", "desc"))
 	cmd.Flags().StringVar(&f.SeenAfter, "seen-after", "", "only devices seen after this RFC3339 time")
 	cmd.Flags().StringVar(&f.SeenBefore, "seen-before", "", "only devices seen before this RFC3339 time")
 	return cmd

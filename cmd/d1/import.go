@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/hnkNkm/flareadm/cmd/internal/cmdutil"
 	"github.com/hnkNkm/flareadm/internal/app"
 	"github.com/hnkNkm/flareadm/internal/cloudflare"
 	"github.com/hnkNkm/flareadm/internal/errors"
@@ -71,6 +72,7 @@ func newDatabaseImport(rt *app.Runtime) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&fileFlag, "file", "", "SQL file to import (@path or path)")
 	cmd.Flags().StringVar(&actionFlag, "action", "", "single import step (init, ingest, poll)")
+	_ = cmd.RegisterFlagCompletionFunc("action", cmdutil.EnumsOf(cloudflare.D1ImportActions))
 	cmd.Flags().StringVar(&filenameFlag, "filename", "", "filename reported to the API (defaults to the --file basename)")
 	cmd.Flags().StringVar(&etagFlag, "etag", "", "upload etag (ingest step)")
 	cmd.Flags().StringVar(&bookmarkFlag, "bookmark", "", "current bookmark for the step")

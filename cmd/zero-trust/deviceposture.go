@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/hnkNkm/flareadm/cmd/internal/cmdutil"
 	"github.com/hnkNkm/flareadm/internal/app"
 	"github.com/hnkNkm/flareadm/internal/cloudflare"
 	"github.com/hnkNkm/flareadm/internal/errors"
@@ -35,6 +36,7 @@ func addPostureFlags(rt *app.Runtime, cmd *cobra.Command, f *postureFlagValues) 
 	f.rt = rt
 	cmd.Flags().StringVar(&f.Name, "name", "", "rule name (required on create)")
 	cmd.Flags().StringVar(&f.Type, "type", "", "posture check type (required on create): "+strings.Join(cloudflare.DevicePostureTypeValues, ", "))
+	_ = cmd.RegisterFlagCompletionFunc("type", cmdutil.EnumsOf(cloudflare.DevicePostureTypeValues))
 	cmd.Flags().StringVar(&f.Description, "description", "", "rule description")
 	cmd.Flags().StringVar(&f.Expiration, "expiration", "", "how long a device check stays valid (for example 24h)")
 	cmd.Flags().StringVar(&f.Schedule, "schedule", "", "check schedule")

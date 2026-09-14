@@ -94,6 +94,7 @@ func newVectorInsert(rt *app.Runtime, op string) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&vectorsFlag, "vectors", "", "NDJSON vector payload, @file only")
 	cmd.Flags().StringVar(&unparsableFlag, "unparsable-behavior", "", "behavior for unparsable vectors (error, discard)")
+	_ = cmd.RegisterFlagCompletionFunc("unparsable-behavior", cmdutil.EnumsOf(unparsableBehaviors))
 	return cmd
 }
 
@@ -161,6 +162,7 @@ func newVectorQuery(rt *app.Runtime) *cobra.Command {
 	cmd.Flags().Int64Var(&topKFlag, "top-k", 0, "number of nearest matches to return")
 	cmd.Flags().BoolVar(&returnValuesFlag, "return-values", false, "include vector values in matches")
 	cmd.Flags().StringVar(&returnMetadataFlag, "return-metadata", "", "metadata to return (none, indexed, all)")
+	_ = cmd.RegisterFlagCompletionFunc("return-metadata", cmdutil.EnumsOf(returnMetadataValues))
 	cmd.Flags().StringVar(&filterFlag, "filter", "", "metadata filter object, inline or @file")
 	return cmd
 }

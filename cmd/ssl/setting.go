@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/hnkNkm/flareadm/cmd/internal/cmdutil"
 	"github.com/hnkNkm/flareadm/internal/app"
 	"github.com/hnkNkm/flareadm/internal/cloudflare"
 	"github.com/hnkNkm/flareadm/internal/errors"
@@ -55,6 +56,8 @@ func newSettingGet(rt *app.Runtime) *cobra.Command {
 			"always_use_https, automatic_https_rewrites, min_tls_version,\n" +
 			"opportunistic_encryption, ssl, tls_1_3.",
 		Args: cobra.MaximumNArgs(1),
+		// The positional is a zone setting name, never a zone.
+		ValidArgsFunction: cmdutil.EnumsOf(cloudflare.SSLSettingsIDs),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, zoneID, err := rt.ResolveZone(cmd.Context())
 			if err != nil {
@@ -133,6 +136,7 @@ func newSettingUpdate(rt *app.Runtime) *cobra.Command {
 		v := new(string)
 		values[sf.setting] = v
 		cmd.Flags().StringVar(v, sf.flag, "", fmt.Sprintf("value for the %s setting", sf.setting))
+		_ = cmd.RegisterFlagCompletionFunc(sf.flag, cmdutil.EnumsOf(cloudflare.SSLSettingsAllowed[sf.setting]))
 	}
 	return cmd
 }

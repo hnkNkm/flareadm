@@ -84,6 +84,7 @@ func newList(rt *app.Runtime) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&phaseFlag, "phase", "", "only rulesets in this phase")
 	cmd.Flags().StringVar(&kindFlag, "kind", "", "only rulesets of this kind (managed, custom, root, zone)")
+	_ = cmd.RegisterFlagCompletionFunc("kind", cmdutil.EnumsOf(kindValues))
 	return cmd
 }
 
@@ -163,6 +164,7 @@ func newCreate(rt *app.Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&nameFlag, "name", "", "ruleset name")
 	cmd.Flags().StringVar(&descriptionFlag, "description", "", "ruleset description")
 	cmd.Flags().StringVar(&kindFlag, "kind", "", "ruleset kind (custom, root, zone; default zone for zone scope)")
+	_ = cmd.RegisterFlagCompletionFunc("kind", cmdutil.EnumsOf(creatableKindValues))
 	cmd.Flags().StringVar(&rulesFlag, "rules", "", "rules as a JSON array, inline or @file")
 	return cmd
 }

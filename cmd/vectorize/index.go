@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/hnkNkm/flareadm/cmd/internal/cmdutil"
 	"github.com/hnkNkm/flareadm/internal/app"
 	"github.com/hnkNkm/flareadm/internal/cloudflare"
 	"github.com/hnkNkm/flareadm/internal/errors"
@@ -113,6 +114,7 @@ func newIndexCreate(rt *app.Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&nameFlag, "name", "", "index name (required)")
 	cmd.Flags().Int64Var(&dimensionsFlag, "dimensions", 0, "vector dimensions")
 	cmd.Flags().StringVar(&metricFlag, "metric", "", "distance metric (cosine, euclidean, dot-product)")
+	_ = cmd.RegisterFlagCompletionFunc("metric", cmdutil.EnumsOf(metricValues))
 	cmd.Flags().StringVar(&presetFlag, "preset", "", "index preset name")
 	cmd.Flags().StringVar(&descriptionFlag, "description", "", "index description")
 	return cmd

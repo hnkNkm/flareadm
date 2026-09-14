@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/hnkNkm/flareadm/cmd/internal/cmdutil"
 	"github.com/hnkNkm/flareadm/internal/app"
 	"github.com/hnkNkm/flareadm/internal/cloudflare"
 	"github.com/hnkNkm/flareadm/internal/errors"
@@ -94,6 +95,7 @@ func newGatewayListList(rt *app.Runtime) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&typeFlag, "type", "", "only lists of this type: "+strings.Join(cloudflare.GatewayListTypeValues, ", "))
+	_ = cmd.RegisterFlagCompletionFunc("type", cmdutil.EnumsOf(cloudflare.GatewayListTypeValues))
 	return cmd
 }
 
@@ -163,6 +165,7 @@ func newGatewayListCreate(rt *app.Runtime) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&nameFlag, "name", "", "list name (required)")
 	cmd.Flags().StringVar(&typeFlag, "type", "", "list type (required): "+strings.Join(cloudflare.GatewayListTypeValues, ", "))
+	_ = cmd.RegisterFlagCompletionFunc("type", cmdutil.EnumsOf(cloudflare.GatewayListTypeValues))
 	cmd.Flags().StringVar(&descriptionFlag, "description", "", "list description")
 	cmd.Flags().StringVar(&itemsFlag, "items", "", "initial items as a JSON array of values or objects, inline or @file")
 	return cmd

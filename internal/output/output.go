@@ -35,6 +35,11 @@ const (
 	Text
 )
 
+// Formats lists the accepted --output values in the order the help text lists
+// them. ParseFormat accepts exactly these, and the shell completion for
+// --output reads this list instead of repeating it.
+var Formats = []string{"table", "json", "yaml", "text"}
+
 // ParseFormat validates a --output value.
 func ParseFormat(s string) (Format, error) {
 	switch s {

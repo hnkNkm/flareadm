@@ -107,9 +107,12 @@ func newList(rt *app.Runtime) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&statusFlag, "status", "", "only rules with this status (active, disabled)")
+	_ = cmd.RegisterFlagCompletionFunc("status", cmdutil.EnumsOf(statusValues))
 	cmd.Flags().StringVar(&orderFlag, "order", "", "sort field (API-defined)")
 	cmd.Flags().StringVar(&directionFlag, "direction", "", "sort direction (asc, desc)")
+	_ = cmd.RegisterFlagCompletionFunc("direction", cmdutil.Enums("asc", "desc"))
 	cmd.Flags().StringVar(&matchFlag, "match", "", "match mode (all, any)")
+	_ = cmd.RegisterFlagCompletionFunc("match", cmdutil.Enums("all", "any"))
 	return cmd
 }
 
@@ -168,6 +171,7 @@ func addWriteFlags(cmd *cobra.Command, targets, actions *string, priority *int64
 	cmd.Flags().StringVar(actions, "actions", "", "actions as a JSON array, inline or @file")
 	cmd.Flags().Int64Var(priority, "priority", 0, "rule priority (1 runs first)")
 	cmd.Flags().StringVar(status, "status", "", "rule status (active, disabled)")
+	_ = cmd.RegisterFlagCompletionFunc("status", cmdutil.EnumsOf(statusValues))
 }
 
 func newCreate(rt *app.Runtime) *cobra.Command {

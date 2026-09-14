@@ -35,6 +35,7 @@ type monitorFlagValues struct {
 func addMonitorFlags(rt *app.Runtime, cmd *cobra.Command, f *monitorFlagValues) {
 	f.rt = rt
 	cmd.Flags().StringVar(&f.Type, "type", "", "probe type: http, https, tcp, udp_icmp, icmp_ping, smtp (required on create)")
+	_ = cmd.RegisterFlagCompletionFunc("type", cmdutil.EnumsOf(cloudflare.LoadBalancerMonitorTypeValues))
 	cmd.Flags().StringVar(&f.Description, "description", "", "description")
 	cmd.Flags().StringVar(&f.Method, "method", "", "HTTP method to probe with")
 	cmd.Flags().StringVar(&f.Path, "path", "", "HTTP path to probe")

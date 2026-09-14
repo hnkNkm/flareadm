@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/hnkNkm/flareadm/cmd/internal/cmdutil"
 	"github.com/hnkNkm/flareadm/internal/app"
 	"github.com/hnkNkm/flareadm/internal/cloudflare"
 	"github.com/hnkNkm/flareadm/internal/errors"
@@ -74,6 +75,7 @@ func newMetadataCreate(rt *app.Runtime) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&propertyFlag, "property", "", "metadata property name (required)")
 	cmd.Flags().StringVar(&typeFlag, "type", "", "metadata index type (string, number, boolean)")
+	_ = cmd.RegisterFlagCompletionFunc("type", cmdutil.EnumsOf(metadataIndexTypes))
 	return cmd
 }
 

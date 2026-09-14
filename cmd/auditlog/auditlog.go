@@ -4,6 +4,7 @@ package auditlog
 import (
 	"github.com/spf13/cobra"
 
+	"github.com/hnkNkm/flareadm/cmd/internal/cmdutil"
 	"github.com/hnkNkm/flareadm/internal/app"
 	"github.com/hnkNkm/flareadm/internal/cloudflare"
 	"github.com/hnkNkm/flareadm/internal/errors"
@@ -60,6 +61,7 @@ func newList(rt *app.Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&f.Actor, "actor", "", "only entries by this actor (email or id)")
 	cmd.Flags().StringVar(&f.Zone, "zone", "", "only entries for this zone name")
 	cmd.Flags().StringVar(&f.Direction, "direction", "", "sort direction (asc, desc)")
+	_ = cmd.RegisterFlagCompletionFunc("direction", cmdutil.Enums("asc", "desc"))
 	cmd.Flags().StringVar(&f.ID, "id", "", "only the entry with this id")
 	cmd.Flags().BoolVar(&hideUserLogs, "hide-user-logs", false, "hide user-initiated entries")
 	return cmd

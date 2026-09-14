@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/hnkNkm/flareadm/cmd/internal/cmdutil"
 	"github.com/hnkNkm/flareadm/internal/app"
 	"github.com/hnkNkm/flareadm/internal/cloudflare"
 	"github.com/hnkNkm/flareadm/internal/errors"
@@ -48,6 +49,7 @@ func addPolicyFlags(rt *app.Runtime, cmd *cobra.Command, f *policyFlagValues) {
 	f.rt = rt
 	cmd.Flags().StringVar(&f.Name, "name", "", "policy name (required on create)")
 	cmd.Flags().StringVar(&f.Decision, "decision", "", "policy decision: "+strings.Join(cloudflare.AccessPolicyDecisionValues, ", "))
+	_ = cmd.RegisterFlagCompletionFunc("decision", cmdutil.EnumsOf(cloudflare.AccessPolicyDecisionValues))
 	cmd.Flags().StringVar(&f.Include, "include", "", "include rules as a JSON array (required on create), inline or @file")
 	cmd.Flags().StringVar(&f.Exclude, "exclude", "", "exclude rules as a JSON array, inline or @file")
 	cmd.Flags().StringVar(&f.Require, "require", "", "require rules as a JSON array, inline or @file")

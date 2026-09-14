@@ -52,6 +52,7 @@ func newDomainList(rt *app.Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&f.Service, "service", "", "only domains attached to this script")
 	cmd.Flags().StringVar(&f.Environment, "environment", "", "only domains in this environment (production, preview)")
 	cmd.Flags().StringVar(&f.ZoneName, "zone-name", "", "only domains in this zone name")
+	_ = cmd.RegisterFlagCompletionFunc("zone-name", cmdutil.Zones(rt))
 	return cmd
 }
 
@@ -120,6 +121,8 @@ func newDomainCreate(rt *app.Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&environmentFlag, "environment", "", "environment (production, preview)")
 	cmd.Flags().StringVar(&zoneIDFlag, "zone-id", "", "zone id of the hostname")
 	cmd.Flags().StringVar(&zoneNameFlag, "zone-name", "", "zone name of the hostname")
+	_ = cmd.RegisterFlagCompletionFunc("zone-id", cmdutil.Zones(rt))
+	_ = cmd.RegisterFlagCompletionFunc("zone-name", cmdutil.Zones(rt))
 	return cmd
 }
 

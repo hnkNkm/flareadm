@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/hnkNkm/flareadm/cmd/internal/cmdutil"
 	"github.com/hnkNkm/flareadm/internal/app"
 	"github.com/hnkNkm/flareadm/internal/cloudflare"
 	"github.com/hnkNkm/flareadm/internal/errors"
@@ -52,6 +53,7 @@ func newCertificatePackList(rt *app.Runtime) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&statusFlag, "status", "", "only packs with this status")
 	cmd.Flags().StringVar(&deployFlag, "deploy", "", "only packs in this environment (staging, production)")
+	_ = cmd.RegisterFlagCompletionFunc("deploy", cmdutil.EnumsOf(packDeployValues))
 	return cmd
 }
 

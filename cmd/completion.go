@@ -3,6 +3,7 @@ package cmd
 import (
 	"github.com/spf13/cobra"
 
+	"github.com/hnkNkm/flareadm/cmd/internal/cmdutil"
 	"github.com/hnkNkm/flareadm/internal/app"
 	"github.com/hnkNkm/flareadm/internal/errors"
 )
@@ -19,7 +20,8 @@ func addCompletion(root *cobra.Command, rt *app.Runtime) {
 			"Example:\n" +
 			"  flareadm completion bash > /etc/bash_completion.d/flareadm\n" +
 			"  flareadm completion zsh > \"${fpath[1]}/_flareadm\"",
-		Args: cobra.ExactArgs(1),
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: cmdutil.Enums("bash", "zsh", "fish", "powershell"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w := cmd.OutOrStdout()
 			switch args[0] {

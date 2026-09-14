@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/hnkNkm/flareadm/cmd/internal/cmdutil"
 	"github.com/hnkNkm/flareadm/internal/app"
 	"github.com/hnkNkm/flareadm/internal/cloudflare"
 	"github.com/hnkNkm/flareadm/internal/errors"
@@ -87,6 +88,9 @@ func newBucketList(rt *app.Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&order, "order", "", "sort field (name, creation_date)")
 	cmd.Flags().StringVar(&direction, "direction", "", "sort direction (asc, desc)")
 	cmd.Flags().StringVar(&jurisdiction, "jurisdiction", "", "bucket jurisdiction (default, eu, us, fedramp)")
+	_ = cmd.RegisterFlagCompletionFunc("order", cmdutil.Enums("name", "creation_date"))
+	_ = cmd.RegisterFlagCompletionFunc("direction", cmdutil.Enums("asc", "desc"))
+	_ = cmd.RegisterFlagCompletionFunc("jurisdiction", cmdutil.EnumsOf(cloudflare.R2Jurisdictions))
 	return cmd
 }
 
@@ -112,6 +116,7 @@ func newBucketGet(rt *app.Runtime) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&jurisdiction, "jurisdiction", "", "bucket jurisdiction (default, eu, us, fedramp)")
+	_ = cmd.RegisterFlagCompletionFunc("jurisdiction", cmdutil.EnumsOf(cloudflare.R2Jurisdictions))
 	return cmd
 }
 
@@ -161,6 +166,9 @@ func newBucketCreate(rt *app.Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&locationHint, "location-hint", "", "location hint (apac, eeur, enam, weur, wnam, oc)")
 	cmd.Flags().StringVar(&storageClass, "storage-class", "", "storage class (Standard, InfrequentAccess)")
 	cmd.Flags().StringVar(&jurisdiction, "jurisdiction", "", "bucket jurisdiction (default, eu, us, fedramp)")
+	_ = cmd.RegisterFlagCompletionFunc("location-hint", cmdutil.EnumsOf(cloudflare.R2LocationHints))
+	_ = cmd.RegisterFlagCompletionFunc("storage-class", cmdutil.EnumsOf(cloudflare.R2StorageClasses))
+	_ = cmd.RegisterFlagCompletionFunc("jurisdiction", cmdutil.EnumsOf(cloudflare.R2Jurisdictions))
 	return cmd
 }
 
@@ -199,6 +207,7 @@ func newBucketDelete(rt *app.Runtime) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&jurisdiction, "jurisdiction", "", "bucket jurisdiction (default, eu, us, fedramp)")
+	_ = cmd.RegisterFlagCompletionFunc("jurisdiction", cmdutil.EnumsOf(cloudflare.R2Jurisdictions))
 	return cmd
 }
 

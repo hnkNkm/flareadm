@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/hnkNkm/flareadm/cmd/internal/cmdutil"
 	"github.com/hnkNkm/flareadm/internal/app"
 	"github.com/hnkNkm/flareadm/internal/cloudflare"
 	"github.com/hnkNkm/flareadm/internal/errors"
@@ -49,6 +50,7 @@ func addAppFlags(rt *app.Runtime, cmd *cobra.Command, f *appFlagValues) {
 	f.rt = rt
 	cmd.Flags().StringVar(&f.Name, "name", "", "application name (required on create)")
 	cmd.Flags().StringVar(&f.Type, "type", "", "application type: "+strings.Join(cloudflare.AccessApplicationTypeValues, ", "))
+	_ = cmd.RegisterFlagCompletionFunc("type", cmdutil.EnumsOf(cloudflare.AccessApplicationTypeValues))
 	cmd.Flags().StringVar(&f.Domain, "domain", "", "application domain (required on create unless the type is SaaS, WARP, infrastructure or MCP portal)")
 	cmd.Flags().StringVar(&f.SessionDuration, "session-duration", "", "session duration (for example 24h)")
 	cmd.Flags().StringVar(&f.AllowedIdPs, "allowed-idps", "", "comma-separated identity provider ids allowed to authenticate")

@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/hnkNkm/flareadm/cmd/internal/cmdutil"
 	"github.com/hnkNkm/flareadm/internal/app"
 	"github.com/hnkNkm/flareadm/internal/cloudflare"
 	"github.com/hnkNkm/flareadm/internal/errors"
@@ -159,6 +160,9 @@ func newDatabaseCreate(rt *app.Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&locationFlag, "location-hint", "", "primary location hint (wnam, enam, weur, eeur, apac, oc)")
 	cmd.Flags().StringVar(&jurisdictionFlag, "jurisdiction", "", "jurisdiction (eu, fedramp, us)")
 	cmd.Flags().StringVar(&replicationFlag, "read-replication-mode", "", "read replication mode (auto, disabled)")
+	_ = cmd.RegisterFlagCompletionFunc("location-hint", cmdutil.EnumsOf(cloudflare.D1LocationHints))
+	_ = cmd.RegisterFlagCompletionFunc("jurisdiction", cmdutil.EnumsOf(cloudflare.D1Jurisdictions))
+	_ = cmd.RegisterFlagCompletionFunc("read-replication-mode", cmdutil.EnumsOf(cloudflare.D1ReadReplicationModes))
 	return cmd
 }
 
@@ -190,6 +194,7 @@ func newDatabaseUpdate(rt *app.Runtime) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&replicationFlag, "read-replication-mode", "", "read replication mode (auto, disabled)")
+	_ = cmd.RegisterFlagCompletionFunc("read-replication-mode", cmdutil.EnumsOf(cloudflare.D1ReadReplicationModes))
 	return cmd
 }
 

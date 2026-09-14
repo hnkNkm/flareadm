@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/hnkNkm/flareadm/cmd/internal/cmdutil"
 	"github.com/hnkNkm/flareadm/internal/app"
 	"github.com/hnkNkm/flareadm/internal/cloudflare"
 	"github.com/hnkNkm/flareadm/internal/errors"
@@ -136,5 +137,12 @@ func newScopes(rt *app.Runtime) *cobra.Command {
 	cmd.Flags().BoolVar(&all, "all", false, "list every scope id Cloudflare reports, not just the ones this CLI requests")
 	cmd.Flags().BoolVar(&readOnly, "read-only", false, "list only the scopes the default login requests")
 	cmd.Flags().StringVar(&category, "category", "", "list only the scopes in this category (see the CATEGORY column)")
+	// Same source as the --category validation in scopeRows: the categories
+	// of the generated catalog.
+	known := make([]string, 0, len(liveScopeGroups))
+	for _, group := range liveScopeGroups {
+		known = append(known, group.Category)
+	}
+	_ = cmd.RegisterFlagCompletionFunc("category", cmdutil.EnumsOf(known))
 	return cmd
 }

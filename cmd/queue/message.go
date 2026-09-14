@@ -129,6 +129,7 @@ func newMessagePush(rt *app.Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&bodyFlag, "body", "", "message body, inline or @file")
 	cmd.Flags().StringVar(&bulkFlag, "bulk", "", "batch of message objects as a JSON array, inline or @file")
 	cmd.Flags().StringVar(&contentType, "content-type", "text", "message content type (text, json)")
+	_ = cmd.RegisterFlagCompletionFunc("content-type", cmdutil.EnumsOf(cloudflare.QueueContentTypes))
 	cmd.Flags().Int64Var(&delayFlag, "delay-seconds", 0, "delay before delivery in seconds")
 	return cmd
 }

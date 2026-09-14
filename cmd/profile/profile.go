@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/hnkNkm/flareadm/cmd/internal/cmdutil"
 	"github.com/hnkNkm/flareadm/internal/app"
 	"github.com/hnkNkm/flareadm/internal/config"
 	"github.com/hnkNkm/flareadm/internal/errors"
@@ -190,6 +191,7 @@ func newCreate(rt *app.Runtime) *cobra.Command {
 		},
 	}
 	addProfileFlags(cmd, &pf)
+	_ = cmd.RegisterFlagCompletionFunc("default-zone", cmdutil.Zones(rt))
 	return cmd
 }
 
@@ -223,6 +225,7 @@ func newUpdate(rt *app.Runtime) *cobra.Command {
 		},
 	}
 	addProfileFlags(cmd, &pf)
+	_ = cmd.RegisterFlagCompletionFunc("default-zone", cmdutil.Zones(rt))
 	return cmd
 }
 

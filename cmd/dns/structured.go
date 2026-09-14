@@ -9,8 +9,16 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/hnkNkm/flareadm/cmd/internal/cmdutil"
 	"github.com/hnkNkm/flareadm/internal/cloudflare"
 	"github.com/hnkNkm/flareadm/internal/errors"
+)
+
+// LOC takes a letter-pair direction per axis. The validator accepts either
+// case and the flags complete the canonical uppercase spelling.
+var (
+	latDirections  = []string{"N", "S"}
+	longDirections = []string{"E", "W"}
 )
 
 // Structured record types use Cloudflare's record "data" object instead of
@@ -272,6 +280,10 @@ func registerStructuredFlags(cmd *cobra.Command) *structuredFlagValues {
 			registerInt(flag)
 		}
 	}
+	// The LOC directions are the only structured fields with a closed set; the
+	// completions read the same lists the validator does.
+	_ = cmd.RegisterFlagCompletionFunc("lat-direction", cmdutil.EnumsOf(latDirections))
+	_ = cmd.RegisterFlagCompletionFunc("long-direction", cmdutil.EnumsOf(longDirections))
 	return sf
 }
 
@@ -299,9 +311,9 @@ func parseFieldValue(sf *structuredFlagValues, f structuredField, priorityValue 
 		return *sf.floats[f.flag], nil
 	case kindDirection:
 		v := strings.ToUpper(*sf.strs[f.flag])
-		valid := []string{"N", "S"}
+		valid := latDirections
 		if f.key == "long_direction" {
-			valid = []string{"E", "W"}
+			valid = longDirections
 		}
 		if !contains(valid, v) {
 			return nil, errors.Usage("invalid value for --%s: %q (expected one of %s)",

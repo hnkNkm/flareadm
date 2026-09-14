@@ -82,6 +82,7 @@ type consumerFlags struct {
 
 func addConsumerFlags(cmd *cobra.Command, cf *consumerFlags) {
 	cmd.Flags().StringVar(&cf.typ, "type", "", "consumer type (worker, http_pull)")
+	_ = cmd.RegisterFlagCompletionFunc("type", cmdutil.EnumsOf(cloudflare.QueueConsumerTypes))
 	cmd.Flags().StringVar(&cf.script, "script", "", "Worker script name (worker consumers)")
 	cmd.Flags().StringVar(&cf.deadLetter, "dead-letter-queue", "", "dead letter queue name")
 	cmd.Flags().StringVar(&cf.settings, "settings", "", "consumer settings as a JSON object, inline or @file (for example batch_size, max_batch_timeout, max_retries)")

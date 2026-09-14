@@ -187,3 +187,27 @@ func TestParseFormat(t *testing.T) {
 		t.Error("ParseFormat(xml) should fail")
 	}
 }
+
+// TestFormatsListsEveryAcceptedValue keeps the exported list (which the shell
+// completion for --output reads) in step with ParseFormat: every listed value
+// must be accepted and name a distinct format, and the list must name every
+// format ParseFormat can return.
+func TestFormatsListsEveryAcceptedValue(t *testing.T) {
+	named := map[Format]bool{}
+	for _, name := range Formats {
+		format, err := ParseFormat(name)
+		if err != nil {
+			t.Errorf("formats lists %q, which ParseFormat rejects: %v", name, err)
+			continue
+		}
+		if named[format] {
+			t.Errorf("formats lists %q twice", name)
+		}
+		named[format] = true
+	}
+	for _, format := range []Format{Table, JSON, YAML, Text} {
+		if !named[format] {
+			t.Errorf("format %d has no name in formats", format)
+		}
+	}
+}

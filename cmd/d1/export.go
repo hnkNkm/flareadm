@@ -87,6 +87,7 @@ func newDatabaseExport(rt *app.Runtime) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&outputFormat, "output-format", "polling", "export format (polling)")
+	_ = cmd.RegisterFlagCompletionFunc("output-format", cmdutil.Enums("polling"))
 	cmd.Flags().StringVar(&bookmarkFlag, "bookmark", "", "export at this time-travel bookmark")
 	cmd.Flags().StringVar(&dumpOptionsFlag, "dump-options", "", "dump options as a JSON object, inline or @file")
 	cmd.Flags().StringVar(&downloadFlag, "download", "", "download the dump to this local path")

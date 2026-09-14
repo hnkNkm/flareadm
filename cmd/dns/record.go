@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/hnkNkm/flareadm/cmd/internal/cmdutil"
 	"github.com/hnkNkm/flareadm/internal/app"
 	"github.com/hnkNkm/flareadm/internal/cloudflare"
 	"github.com/hnkNkm/flareadm/internal/errors"
@@ -88,6 +89,9 @@ type recordFlags struct {
 func addRecordFlags(cmd *cobra.Command, rf *recordFlags) {
 	cmd.Flags().StringVar(&rf.name, "name", "", "record name (may be relative to the zone, e.g. api)")
 	cmd.Flags().StringVar(&rf.typ, "type", "", "record type (A, AAAA, CNAME, MX, TXT, or a structured type: CAA, CERT, DNSKEY, DS, HTTPS, LOC, NAPTR, OPENPGPKEY, SMIMEA, SRV, SSHFP, SVCB, TLSA, URI)")
+	// The validator accepts any casing, so the completion offers the canonical
+	// uppercase spelling recordTypes holds.
+	_ = cmd.RegisterFlagCompletionFunc("type", cmdutil.EnumsOf(recordTypes))
 	cmd.Flags().StringVar(&rf.content, "content", "", "record content (e.g. 192.0.2.10); content-based types only")
 	cmd.Flags().IntVar(&rf.ttl, "ttl", 0, "time to live in seconds, or 1 for automatic")
 	cmd.Flags().BoolVar(&rf.proxied, "proxied", false, "proxy through Cloudflare (A/AAAA/CNAME only)")
@@ -250,6 +254,7 @@ func newRecordList(rt *app.Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&nameFlag, "name", "", "only records with this exact name")
 	cmd.Flags().StringVar(&typeFlag, "type", "", "only records of this type")
 	cmd.Flags().StringVar(&contentFlag, "content", "", "only records with this exact content")
+	_ = cmd.RegisterFlagCompletionFunc("type", cmdutil.EnumsOf(recordTypes))
 	return cmd
 }
 
