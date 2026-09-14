@@ -88,6 +88,31 @@
         };
       });
 
-      formatter = forAllSystems (pkgs: pkgs.nixfmt);
+      formatter = forAllSystems (
+        pkgs:
+        pkgs.writeShellApplication {
+          name = "nixfmt";
+          runtimeInputs = [ pkgs.nixfmt ];
+          text = ''
+            # `nix fmt` with no path arguments invokes the formatter with an
+            # empty argument list (Nix 2.33), and nixfmt then falls back to its
+            # deprecated bare mode, which reads stdin and fails. Accept the
+            # repository's own Nix files as the default set so a bare `nix fmt`
+            # in the flake root does the obvious thing; explicit paths (and the
+            # flags nixfmt accepts) are passed through unchanged.
+            if [ "$#" -gt 0 ]; then
+              exec nixfmt "$@"
+            fi
+
+            shopt -s globstar nullglob
+            files=(**/*.nix)
+            if [ "''${#files[@]}" -eq 0 ]; then
+              echo "nixfmt: no .nix files found under $PWD" >&2
+              exit 0
+            fi
+            exec nixfmt "''${files[@]}"
+          '';
+        }
+      );
     };
 }

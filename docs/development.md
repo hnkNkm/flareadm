@@ -9,10 +9,13 @@ no global Go installation is required.
 | --- | --- |
 | `devShells.default` | Go, gopls, gotools, golangci-lint, delve, goreleaser, git, nixfmt |
 | `packages.default` | `flareadm` binary (`buildGoModule`) |
-| `formatter` | `nixfmt` |
+| `formatter` | `nixfmt`, wrapped so a bare `nix fmt` formats the repository's `*.nix` files |
 
 The dev shell sets `GOTOOLCHAIN=local` so builds always use the Go version provided by the
 flake.
+
+`nix fmt` with no arguments formats every `*.nix` file under the current directory; explicit paths
+and nixfmt flags are passed straight through to nixfmt.
 
 ## Quick start
 
