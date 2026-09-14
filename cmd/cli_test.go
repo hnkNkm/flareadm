@@ -10525,14 +10525,26 @@ func TestOAuthLoginAuthorizeURLUsesLiveScopeIDs(t *testing.T) {
 
 	// Explicit scopes: live ids in order, then the protocol scopes.
 	explicit := scopesOf(t, authorizeURL(t, "--scopes", "zone.read,dns.write"))
-	if got, want := strings.Join(explicit, " "), "zone.read dns.write openid offline offline_access"; got != want {
+	if got, want := strings.Join(explicit, " "), "zone.read dns.write offline_access"; got != want {
 		t.Fatalf("scope = %q, want %q", got, want)
+	}
+	// openid and offline are rejected by Cloudflare for this client type
+	// (error=invalid_scope), so they must never appear in the request.
+	for _, forbidden := range []string{"openid", "offline"} {
+		for _, id := range explicit {
+			if id == forbidden {
+				t.Fatalf("the authorize URL must never request %q: %v", forbidden, explicit)
+			}
+		}
+	}
+	if strings.Count(strings.Join(explicit, " "), "offline_access") != 1 {
+		t.Fatalf("offline_access must appear exactly once: %v", explicit)
 	}
 
 	// Default: the read-only catalog, every id a live dot-delimited one.
 	defaultScopes := scopesOf(t, authorizeURL(t))
 	joined := strings.Join(defaultScopes, " ")
-	for _, want := range []string{"zone.read", "dns.read", "memberships.read", "notifications.read", "openid", "offline", "offline_access"} {
+	for _, want := range []string{"zone.read", "dns.read", "memberships.read", "notifications.read", "offline_access"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("default scope set is missing %q: %s", want, joined)
 		}
@@ -10903,5 +10915,38 @@ func TestAuthVerifyOtherFailuresDoNotFallBack(t *testing.T) {
 	}
 	if !strings.Contains(res.stderr, "502") {
 		t.Fatalf("the transport failure must be reported: %q", res.stderr)
+	}
+}
+
+// TestAuthVerifyOAuthIdentityPermissionMessage: when GET /user answers 403 during
+// an OAuth login, the credential is valid but the client is missing the
+// user-details.read permission - the message must say that, and name the fix.
+func TestAuthVerifyOAuthIdentityPermissionMessage(t *testing.T) {
+	stub := newOAuthStub(t)
+	stub.apply(t)
+	newHome(t)
+	t.Setenv("FLAREADM_API_TOKEN", "")
+	t.Setenv("CLOUDFLARE_API_TOKEN", "")
+	writeStoredCredential(t, "default", storedCredentialMap(time.Now().Add(time.Hour)))
+
+	api := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
+		if path == "/user" {
+			s, b := apiErr(403, 9109, "Unauthorized to access requested resource")
+			return s, b
+		}
+		s, b := apiErr(404, 7000, "unhandled stub path")
+		return s, b
+	})
+	res := runCLI(t, "auth", "verify", "--endpoint-url", api.srv.URL)
+	if res.code != errors.CodePermission {
+		t.Fatalf("code=%d, want 4 (stderr=%q)", res.code, res.stderr)
+	}
+	for _, want := range []string{"user-details.read", "registered scopes", "auth login", "GET /user"} {
+		if !strings.Contains(res.stderr, want) {
+			t.Fatalf("stderr is missing %q: %q", want, res.stderr)
+		}
+	}
+	if strings.Contains(res.stderr, "Invalid API Token") {
+		t.Fatalf("the credential is valid, only the scope is missing: %q", res.stderr)
 	}
 }

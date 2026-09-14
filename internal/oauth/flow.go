@@ -300,11 +300,19 @@ func authorizeURL(base, clientID, redirectURI string, scopes []string, state, ch
 	return u.String(), nil
 }
 
-// RequiredScopes are always requested: offline_access makes the server issue a
-// refresh token (docs/oauth.md §5 Q3) and the non-standard `offline` alias is
-// required alongside it by Cloudflare's server (verified in the cf CLI scope
-// catalog, docs/oauth.md §5 Q5). `openid` is requested for identity.
-var RequiredScopes = []string{"openid", "offline", "offline_access"}
+// RequiredScopes are always requested, and `offline_access` is the only one:
+//
+//   - Cloudflare answers an authorize request for this client type with
+//     HTTP 303 to the loopback callback carrying
+//     `error=invalid_scope` ("The OAuth 2.0 Client is not allowed to request
+//     scope 'openid'") when `openid` or `offline` is present. Neither is in the
+//     live `GET /oauth/scopes` list (neither is an id at all), so they must not
+//     be requested. Verified against the real authorize endpoint.
+//   - `offline_access` is what makes the server issue a refresh token, and it
+//     must accompany the `refresh_token` grant.
+//   - The CLI's identity call (GET /user) is authorized by the
+//     `user-details.read` API permission, not by the OIDC `openid` scope.
+var RequiredScopes = []string{"offline_access"}
 
 // WithOfflineScopes returns scopes with the required entries appended when
 // missing, preserving the caller's order.
@@ -332,6 +340,14 @@ type failureContext struct {
 	ClientID    string
 }
 
+// ScopeExample is the explicit --scopes list the invalid_scope remediation
+// suggests. It must contain live ids: the --scopes validator rejects the pre-0.4
+// colon form, so an example like account:read,zone:read would send the user
+// straight into a usage error. cmd/auth's
+// TestScopeRemediationExampleIsValidatable and this package's
+// TestInvalidScopeRemediationUsesLiveScopeExample keep the two sides in step.
+const ScopeExample = "zone.read,dns.read"
+
 // oauthFailure renders an actionable exit-3 error for an OAuth error response:
 // the error code and Cloudflare's description are always included, followed by
 // a remediation chosen per code. Scope problems point at --scopes; client and
@@ -356,7 +372,8 @@ func oauthFailure(fc failureContext, code, description, uri string) error {
 		if len(fc.Scopes) > 0 {
 			fmt.Fprintf(&b, " (requested: %s)", strings.Join(fc.Scopes, " "))
 		}
-		b.WriteString(". Retry with an explicit list, for example 'flareadm auth login --scopes account:read,zone:read', and check which scopes the client is registered for in the Cloudflare dashboard (Manage Account > OAuth clients).")
+		b.WriteString(". Retry with an explicit list, for example 'flareadm auth login --scopes " + ScopeExample +
+			"', and check which scopes the client is registered for in the Cloudflare dashboard (Manage Account > OAuth clients).")
 	case "unauthorized_client", "invalid_client":
 		b.WriteString("the client was rejected")
 		if fc.RedirectURI != "" {

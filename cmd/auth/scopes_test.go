@@ -128,6 +128,18 @@ func TestSelectScopesAcceptsLiveIDs(t *testing.T) {
 	if _, err := selectScopes("workers-r2.metadata_read", false, false); err != nil {
 		t.Fatalf("live id rejected: %v", err)
 	}
+	// openid and offline are not requestable: Cloudflare answers an authorize
+	// request containing them with error=invalid_scope, so the validator must
+	// reject them instead of letting the user hit that wall.
+	for _, rejected := range []string{"openid", "offline"} {
+		if _, err := selectScopes(rejected, false, false); err == nil {
+			t.Fatalf("%q must not be accepted as a --scopes value", rejected)
+		}
+	}
+	// offline_access stays valid: the login appends it itself.
+	if _, err := selectScopes("offline_access", false, false); err != nil {
+		t.Fatalf("offline_access must stay requestable: %v", err)
+	}
 }
 
 // TestSelectScopesRejectsUnknownWithSuggestion: a typo or a pre-0.4 id is named
@@ -259,5 +271,33 @@ func TestScopeRowsViews(t *testing.T) {
 
 	if _, err := scopeRows(false, false, "nope"); err == nil {
 		t.Fatal("an unknown category must be rejected")
+	}
+}
+
+// TestScopeRemediationExampleIsValidatable pins the property that matters for the
+// invalid_scope remediation text: the ids it suggests must be accepted by the
+// --scopes validator (scopeSet) and by selectScopes. The pre-0.4 colon form must
+// never come back, because suggesting it sends the user into a usage error
+// instead of a working login.
+func TestScopeRemediationExampleIsValidatable(t *testing.T) {
+	example := oauth.ScopeExample
+	if example == "" {
+		t.Fatal("oauth.ScopeExample is empty")
+	}
+	ids := splitScopes(example)
+	if len(ids) == 0 {
+		t.Fatalf("the remediation example has no scope ids: %q", example)
+	}
+	known := scopeSet()
+	for _, id := range ids {
+		if !known[id] {
+			t.Fatalf("the remediation suggests %q, which the --scopes validator rejects (example: %q)", id, example)
+		}
+		if strings.Contains(id, ":") {
+			t.Fatalf("the remediation still uses a colon-delimited id: %q", id)
+		}
+	}
+	if _, err := selectScopes(example, false, false); err != nil {
+		t.Fatalf("selectScopes(%q) = %v", example, err)
 	}
 }

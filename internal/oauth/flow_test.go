@@ -192,8 +192,8 @@ func TestLoginFullFlowPKCE(t *testing.T) {
 			t.Fatalf("%s = %q, want %q", key, got, want)
 		}
 	}
-	if !strings.Contains(q.Get("scope"), "offline_access") || !strings.Contains(q.Get("scope"), "offline") {
-		t.Fatalf("scope = %q, want offline_access and offline", q.Get("scope"))
+	if strings.Join(strings.Fields(q.Get("scope")), " ") != "account:read offline_access" {
+		t.Fatalf("scope = %q, want account:read plus offline_access", q.Get("scope"))
 	}
 	if q.Get("code_challenge") == "" || q.Get("state") == "" {
 		t.Fatal("authorize URL lacks PKCE challenge or state")
@@ -413,15 +413,14 @@ func TestEndpointsFromEnvOverrides(t *testing.T) {
 }
 
 func TestWithOfflineScopesAppendsRequired(t *testing.T) {
-	got := WithOfflineScopes([]string{"account:read", "offline"})
-	joined := fmt.Sprint(got)
-	for _, want := range []string{"account:read", "offline", "offline_access", "openid"} {
-		if !strings.Contains(joined, want) {
-			t.Fatalf("scope %q missing from %v", want, got)
-		}
+	got := WithOfflineScopes([]string{"account:read"})
+	if strings.Join(got, " ") != "account:read offline_access" {
+		t.Fatalf("WithOfflineScopes = %v, want account:read plus offline_access", got)
 	}
-	if strings.Count(joined, "offline ") > 1 || strings.Contains(joined, "offline offline") {
-		t.Fatalf("duplicate scopes: %v", got)
+	// Requesting the same list twice must not duplicate the required scope.
+	again := WithOfflineScopes(got)
+	if strings.Join(again, " ") != "account:read offline_access" {
+		t.Fatalf("WithOfflineScopes is not idempotent: %v", again)
 	}
 }
 
@@ -1183,5 +1182,80 @@ func TestPreflightIgnoresSuccessfulRedirect(t *testing.T) {
 	}
 	if strings.Contains(stderr.String(), "Cloudflare rejected the authorization request") {
 		t.Fatalf("a success redirect must stay silent:\\n%s", stderr.String())
+	}
+}
+
+// TestAuthorizeURLRequestsOnlyOfflineAccess pins the required-scope contract
+// against the live server behaviour: Cloudflare answers HTTP 303 with
+// error=invalid_scope ("The OAuth 2.0 Client is not allowed to request scope
+// 'openid'") when openid or offline is present, so the authorize URL must carry
+// exactly the requested ids plus offline_access - never openid, never offline.
+func TestAuthorizeURLRequestsOnlyOfflineAccess(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		request   []string
+		wantScope string
+	}{
+		{"read-only default", []string{"zone.read", "dns.read"}, "zone.read dns.read offline_access"},
+		{"already offline", []string{"zone.read", "offline_access"}, "zone.read offline_access"},
+		{"empty", nil, "offline_access"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target, err := authorizeURL("https://auth.example.test/oauth2/auth", "client-1",
+				"http://127.0.0.1:8976/oauth/callback", WithOfflineScopes(tc.request), "state-1", "challenge-1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			parsed, err := url.Parse(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			scope := parsed.Query().Get("scope")
+			if strings.Join(strings.Fields(scope), " ") != tc.wantScope {
+				t.Fatalf("scope = %q, want %q", scope, tc.wantScope)
+			}
+			for _, forbidden := range []string{"openid", "offline"} {
+				for _, id := range strings.Fields(scope) {
+					if id == forbidden {
+						t.Fatalf("the authorize URL must never request %q: %v", forbidden, strings.Fields(scope))
+					}
+				}
+			}
+			if strings.Count(scope, "offline_access") != 1 {
+				t.Fatalf("offline_access must appear exactly once: %q", scope)
+			}
+		})
+	}
+	if len(RequiredScopes) != 1 || RequiredScopes[0] != "offline_access" {
+		t.Fatalf("RequiredScopes = %v, want exactly [offline_access]", RequiredScopes)
+	}
+}
+
+// TestInvalidScopeRemediationUsesLiveScopeExample: the invalid_scope remediation
+// must suggest ids the --scopes validator accepts, never the pre-0.4 colon form
+// (which the validator rejects, turning the fix into a usage error).
+func TestInvalidScopeRemediationUsesLiveScopeExample(t *testing.T) {
+	err := oauthFailure(failureContext{
+		Stage:    "authorization request",
+		Scopes:   []string{"zone:read", "zone.read"},
+		ClientID: "client-1",
+	}, "invalid_scope", "The requested scope is invalid, unknown, or malformed.", "")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "--scopes "+ScopeExample) {
+		t.Fatalf("the remediation does not use ScopeExample:\n%s", message)
+	}
+	if strings.Contains(message, "account:read,zone:read") {
+		t.Fatalf("the remediation still shows the colon-delimited example:\n%s", message)
+	}
+	for _, id := range strings.Split(ScopeExample, ",") {
+		if strings.Contains(id, ":") {
+			t.Fatalf("ScopeExample contains a colon-delimited id: %q", id)
+		}
+		if !strings.Contains(message, id) {
+			t.Fatalf("ScopeExample id %q missing from the remediation:\n%s", id, message)
+		}
 	}
 }

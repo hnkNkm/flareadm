@@ -99,9 +99,10 @@ func newScopes(rt *app.Runtime) *cobra.Command {
 			"These are the values to put in the `scopes` array when creating the OAuth\n" +
 			"client in the Cloudflare dashboard (Manage Account > OAuth clients), and the\n" +
 			"same dot-delimited strings the login sends in the authorize request:\n" +
-			"registering a scope here is what makes it requestable. The three protocol\n" +
-			"scopes (openid, offline, offline_access) are added by the login itself and\n" +
-			"are not listed.\n\n" +
+			"registering a scope here is what makes it requestable. The protocol scope\n" +
+			"`offline_access` is added by the login itself (it is what makes the server\n" +
+			"issue a refresh token) and is not listed; the OIDC `openid`/`offline` scopes\n" +
+			"are rejected by Cloudflare for this client type and are never requested.\n\n" +
 			"The DEFAULT column marks the set the login requests when no scope flag is\n" +
 			"given (`--read-only` is the default for `auth login`); rows without it are\n" +
 			"requested only with `--all-scopes`. `--all` lists every scope id Cloudflare\n" +

@@ -49,8 +49,21 @@ func newVerify(rt *app.Runtime) *cobra.Command {
 				return err
 			}
 			if rt.IsOAuthCredential() {
+				// Identity is authorized by the `user-details.read` API permission
+				// the client is registered with, not by an OIDC `openid` scope:
+				// Cloudflare rejects `openid`/`offline` in an authorize request for
+				// this client type (see oauth.RequiredScopes), and the CLI does not
+				// request them.
 				res, err := client.UserDetails(cmd.Context())
 				if err != nil {
+					if forbiddenByScope(err) {
+						return errors.New(errors.CodePermission,
+							"the OAuth client is not allowed to read the user identity: GET /user needs the "+
+								"user-details.read permission on the client (%s). Add user-details.read to the "+
+								"client's registered scopes and run 'flareadm auth login' again. "+
+								"`flareadm auth scopes` lists the ids this CLI requests",
+							err.Error())
+					}
 					return err
 				}
 				row := func(u cloudflare.UserDetails) []string {
@@ -104,6 +117,17 @@ func identityName(u cloudflare.UserDetails) string {
 		return name
 	}
 	return u.Username
+}
+
+// forbiddenByScope reports whether err is an HTTP 403: for the OAuth identity
+// call that means the client is missing the user-details.read permission, which
+// is actionable, unlike a plain permission failure from another endpoint.
+func forbiddenByScope(err error) bool {
+	var exit *errors.ExitError
+	if !stderrors.As(err, &exit) {
+		return false
+	}
+	return exit.StatusCode == http.StatusForbidden
 }
 
 // accountVerification is the account-scoped verification result plus the marker
