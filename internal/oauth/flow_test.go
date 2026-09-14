@@ -157,27 +157,30 @@ func TestLoginFullFlowPKCE(t *testing.T) {
 	fake := newFakeOAuth(t)
 	var printed syncBuffer
 	var protected []string
-	type result struct {
-		cred Credential
-		err  error
-	}
-	done := make(chan result, 1)
+	// CallbackPort 0 is not ephemeral: Login maps it to the documented default
+	// (8976), which a second test binary of this package running at the same
+	// time can hold, failing the listener bind before the URL is printed.
+	// freePort is called here, in the test goroutine, so its t.Fatal is legal.
+	port := freePort(t)
+	var cred Credential
+	done := make(chan error, 1)
 	go func() {
-		cred, err := Login(context.Background(), LoginOptions{
+		c, err := Login(context.Background(), LoginOptions{
 			ClientID:     "client-123",
 			Scopes:       []string{"account:read"},
 			CallbackHost: "127.0.0.1",
-			CallbackPort: 0, // ephemeral: the test learns the URL from Out
+			CallbackPort: port,
 			OpenBrowser:  false,
 			Timeout:      10 * time.Second,
 			Endpoints:    fake.endpoints(),
 			Out:          &printed,
 			Protect:      func(s string) { protected = append(protected, s) },
 		})
-		done <- result{cred, err}
+		cred = c
+		done <- err
 	}()
 
-	authorize := waitForAuthorizeURL(t, &printed)
+	authorize := waitForAuthorizeURL(t, &printed, done)
 	parsed, err := url.Parse(strings.TrimSpace(authorize))
 	if err != nil {
 		t.Fatalf("authorize URL: %v", err)
@@ -199,15 +202,14 @@ func TestLoginFullFlowPKCE(t *testing.T) {
 		t.Fatal("authorize URL lacks PKCE challenge or state")
 	}
 	browser(t, strings.TrimSpace(authorize))
-	got := <-done
-	if got.err != nil {
-		t.Fatalf("login: %v", got.err)
+	if err := <-done; err != nil {
+		t.Fatalf("login: %v", err)
 	}
-	if got.cred.AccessToken != "access-from-server" || got.cred.RefreshToken != "refresh-from-server" {
-		t.Fatalf("credential = %+v", got.cred)
+	if cred.AccessToken != "access-from-server" || cred.RefreshToken != "refresh-from-server" {
+		t.Fatalf("credential = %+v", cred)
 	}
-	if got.cred.ExpiresAt.IsZero() || len(got.cred.Scopes) != 3 {
-		t.Fatalf("expiry/scopes not derived: %+v", got.cred)
+	if cred.ExpiresAt.IsZero() || len(cred.Scopes) != 3 {
+		t.Fatalf("expiry/scopes not derived: %+v", cred)
 	}
 
 	// The token request must be a public-client code exchange with the verifier
@@ -235,11 +237,18 @@ func TestLoginFullFlowPKCE(t *testing.T) {
 	}
 }
 
-// waitForAuthorizeURL polls the writer until the URL line appears.
-func waitForAuthorizeURL(t *testing.T, w *syncBuffer) string {
+// waitForAuthorizeURL polls the writer until the URL line appears. loginDone is
+// the channel the login goroutine reports its result on: Login prints the URL
+// before it waits for the callback, so a login that returned while the URL is
+// still missing failed, and its own error is the reason - reporting that as a
+// printing failure would hide the cause.
+func waitForAuthorizeURL(t *testing.T, w *syncBuffer, loginDone <-chan error) string {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	for {
 		if s := w.String(); strings.Contains(s, "http") {
 			for _, line := range strings.Split(s, "\n") {
 				if strings.HasPrefix(strings.TrimSpace(line), "http") {
@@ -247,25 +256,30 @@ func waitForAuthorizeURL(t *testing.T, w *syncBuffer) string {
 				}
 			}
 		}
-		time.Sleep(10 * time.Millisecond)
+		select {
+		case err := <-loginDone:
+			t.Fatalf("the login returned before printing the authorize URL: %v", err)
+		case <-deadline.C:
+			t.Fatal("the authorize URL was never printed")
+		case <-ticker.C:
+		}
 	}
-	t.Fatal("the authorize URL was never printed")
-	return ""
 }
 
 func TestLoginStateMismatchIsRejected(t *testing.T) {
 	fake := newFakeOAuth(t)
 	var printed syncBuffer
+	port := freePort(t)
 	done := make(chan error, 1)
 	go func() {
 		_, err := Login(context.Background(), LoginOptions{
-			ClientID: "client-123", CallbackHost: "127.0.0.1",
+			ClientID: "client-123", CallbackHost: "127.0.0.1", CallbackPort: port,
 			OpenBrowser: false, Timeout: 5 * time.Second,
 			Endpoints: fake.endpoints(), Out: &printed,
 		})
 		done <- err
 	}()
-	authorize := strings.TrimSpace(waitForAuthorizeURL(t, &printed))
+	authorize := strings.TrimSpace(waitForAuthorizeURL(t, &printed, done))
 	redirect, err := url.Parse(authorize)
 	if err != nil {
 		t.Fatal(err)
@@ -285,16 +299,17 @@ func TestLoginAccessDeniedMapsToAuthError(t *testing.T) {
 	fake := newFakeOAuth(t)
 	fake.denyConsent = true
 	var printed syncBuffer
+	port := freePort(t)
 	done := make(chan error, 1)
 	go func() {
 		_, err := Login(context.Background(), LoginOptions{
-			ClientID: "client-123", CallbackHost: "127.0.0.1",
+			ClientID: "client-123", CallbackHost: "127.0.0.1", CallbackPort: port,
 			OpenBrowser: false, Timeout: 5 * time.Second,
 			Endpoints: fake.endpoints(), Out: &printed,
 		})
 		done <- err
 	}()
-	browser(t, strings.TrimSpace(waitForAuthorizeURL(t, &printed)))
+	browser(t, strings.TrimSpace(waitForAuthorizeURL(t, &printed, done)))
 	err := <-done
 	if err == nil || !strings.Contains(err.Error(), "access_denied") {
 		t.Fatalf("want an access_denied error, got %v", err)
@@ -385,7 +400,7 @@ func TestTokenEndpointErrorsAreAuthFailures(t *testing.T) {
 	fake.failToken = true
 	fake.mu.Unlock()
 	_, err := Login(context.Background(), LoginOptions{
-		ClientID: "client", CallbackHost: "127.0.0.1", OpenBrowser: false,
+		ClientID: "client", CallbackHost: "127.0.0.1", CallbackPort: freePort(t), OpenBrowser: false,
 		Timeout: 300 * time.Millisecond, Endpoints: fake.endpoints(), Out: &syncBuffer{},
 	})
 	// Login cannot reach the token endpoint without a callback, so this checks
@@ -577,17 +592,18 @@ func TestOpenInBrowserReportsWhenEveryCandidateFails(t *testing.T) {
 func TestLoginKeepsWaitingWhenBrowserCannotOpen(t *testing.T) {
 	fake := newFakeOAuth(t)
 	var stdout, stderr syncBuffer
+	port := freePort(t)
 	done := make(chan error, 1)
 	go func() {
 		_, err := Login(context.Background(), LoginOptions{
-			ClientID: "client-123", CallbackHost: "127.0.0.1", CallbackPort: 0,
+			ClientID: "client-123", CallbackHost: "127.0.0.1", CallbackPort: port,
 			OpenBrowser: true, Timeout: 10 * time.Second,
 			Endpoints: fake.endpoints(), Out: &stdout, ErrOut: &stderr,
 			OpenURL: func(string) error { return fmt.Errorf("no browser opener worked (xdg-open failed: not found)") },
 		})
 		done <- err
 	}()
-	url := waitForAuthorizeURL(t, &stderr)
+	url := waitForAuthorizeURL(t, &stderr, done)
 	if n := countURLs(stderr.String()); n != 1 {
 		t.Fatalf("stderr has %d URL lines, want exactly 1:\n%s", n, stderr.String())
 	}
@@ -610,10 +626,11 @@ func TestLoginBrowserPathWritesURLToErrOutOnly(t *testing.T) {
 	fake := newFakeOAuth(t)
 	var stdout, stderr syncBuffer
 	openerCalled := false
+	port := freePort(t)
 	done := make(chan error, 1)
 	go func() {
 		_, err := Login(context.Background(), LoginOptions{
-			ClientID: "client-123", CallbackHost: "127.0.0.1", CallbackPort: 0,
+			ClientID: "client-123", CallbackHost: "127.0.0.1", CallbackPort: port,
 			OpenBrowser: true, Timeout: 10 * time.Second,
 			Endpoints: fake.endpoints(), Out: &stdout, ErrOut: &stderr,
 			OpenURL: func(target string) error {
