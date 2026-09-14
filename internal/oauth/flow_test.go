@@ -650,11 +650,14 @@ func TestLoginBrowserPathWritesURLToErrOutOnly(t *testing.T) {
 func TestLoginBrowserDiagnosticFiresOnceAfterGrace(t *testing.T) {
 	fake := newFakeOAuth(t)
 	var stdout, stderr syncBuffer
-	const grace = 50 * time.Millisecond
+	// The margin between the grace and the timeout is deliberately wide (10ms vs
+	// 1s): under -race the process can be so slow to reach the handoff that a
+	// tight pair would time out before the diagnostic fires.
+	const grace = 10 * time.Millisecond
 	port := freePort(t)
 	_, err := Login(context.Background(), LoginOptions{
 		ClientID: "client-123", CallbackHost: "127.0.0.1", CallbackPort: port,
-		OpenBrowser: true, Timeout: 600 * time.Millisecond, BrowserGrace: grace,
+		OpenBrowser: true, Timeout: time.Second, BrowserGrace: grace,
 		Endpoints: fake.endpoints(), Out: &stdout, ErrOut: &stderr,
 		OpenURL: func(string) error { return nil }, // a browser "opened" but nothing came back
 	})
