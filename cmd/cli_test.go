@@ -10739,7 +10739,7 @@ func TestAuthVerifyFallsBackToAccountOwnedToken(t *testing.T) {
 	setToken(t, "acct-token")
 	var paths []string
 	accountVerify := `{"success":true,"errors":[],"messages":[{"code":10000,"message":"This API Token is valid and active","type":null}],` +
-		`"result":{"id":"4f33d3b1ae76bd7e3727df1f147a5ec7","status":"active","expires_on":"2026-09-18T23:59:59Z"}}`
+		`"result":{"id":"0123456789abcdef0123456789abcdef","status":"active","expires_on":"2030-01-01T00:00:00Z"}}`
 	api := newAPI(t, func(method, path string, r recordedRequest) (int, string) {
 		paths = append(paths, method+" "+path)
 		switch path {
@@ -10760,7 +10760,7 @@ func TestAuthVerifyFallsBackToAccountOwnedToken(t *testing.T) {
 	if res.code != 0 {
 		t.Fatalf("code=%d stderr=%q stdout=%q", res.code, res.stderr, res.stdout)
 	}
-	for _, want := range []string{"4f33d3b1ae76bd7e3727df1f147a5ec7", "active", "2026-09-18T23:59:59Z", "account-owned token", "EXPIRES", "SCOPE"} {
+	for _, want := range []string{"0123456789abcdef0123456789abcdef", "active", "2030-01-01T00:00:00Z", "account-owned token", "EXPIRES", "SCOPE"} {
 		if !strings.Contains(res.stdout, want) {
 			t.Fatalf("output is missing %q:\n%s", want, res.stdout)
 		}
@@ -10801,7 +10801,7 @@ func TestAuthVerifyFallsBackToAccountOwnedToken(t *testing.T) {
 	if err := json.Unmarshal([]byte(res.stdout), &payload); err != nil {
 		t.Fatalf("json: %v\n%s", err, res.stdout)
 	}
-	if payload.Data.Scope != "account-owned token" || payload.Data.ExpiresOn != "2026-09-18T23:59:59Z" || payload.Data.Status != "active" {
+	if payload.Data.Scope != "account-owned token" || payload.Data.ExpiresOn != "2030-01-01T00:00:00Z" || payload.Data.Status != "active" {
 		t.Fatalf("json payload = %+v", payload.Data)
 	}
 	if strings.Contains(res.stdout, "This API Token is valid and active") {

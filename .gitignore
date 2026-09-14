@@ -29,3 +29,7 @@
 # OS
 .DS_Store
 Thumbs.db
+
+# Agent/harness workspace
+/.agents/
+skills-lock.json

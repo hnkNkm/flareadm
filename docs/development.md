@@ -168,8 +168,9 @@ How a release is cut:
    SHA-256 file, Syft-generated SBOMs, and a cosign keyless signature and certificate for
    `checksums.txt`. Signing the checksum file covers every archive listed in it.
 4. Signing uses cosign keyless (Sigstore Fulcio via the workflow's OIDC token). GitHub
-   build-provenance attestations are not available for user-owned private repositories, which
-   is why they are not used.
+   build-provenance attestations were dropped because they are not available for user-owned private
+   repositories; that constraint no longer applies once the repository is public, so they can be
+   re-added then.
 
 How a consumer verifies a downloaded artifact:
 
