@@ -168,9 +168,14 @@ How a release is cut:
    SHA-256 file, Syft-generated SBOMs, and a cosign keyless signature and certificate for
    `checksums.txt`. Signing the checksum file covers every archive listed in it.
 4. Signing uses cosign keyless (Sigstore Fulcio via the workflow's OIDC token). GitHub
-   build-provenance attestations were dropped because they are not available for user-owned private
-   repositories; that constraint no longer applies once the repository is public, so they can be
-   re-added then.
+   build-provenance attestations were dropped while the repository was private, where they are not
+   available for user-owned accounts, and remain un-added deliberately: cosign keyless already binds
+   `checksums.txt` to this repository's release workflow, which is what consumers verify. They can be
+   added later if a second, GitHub-native attestation is ever wanted.
+5. The release job deliberately does **not** install Nix and runs GoReleaser with
+   `--parallelism 1`. Three consecutive runs were torn down by the runner about 7m35s into the build
+   while six cross-compiles ran at once; with the Nix installer removed and the builds serialised,
+   the job completes in about 28 minutes.
 
 How a consumer verifies a downloaded artifact:
 
