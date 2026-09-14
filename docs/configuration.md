@@ -112,11 +112,13 @@ account. Making it public additionally requires a client name, logo and client U
 domain-ownership verification (the `cloudflare_oauth_client_publisher=` prefix), and the change is
 permanent.
 
-Scopes: select at least one. Selected scopes are required by default and can be marked optional;
-optional scopes may be declined on the consent screen. `openid`, `offline` and `offline_access`
-cannot be optional and are added or removed automatically based on the grant and response types.
-The authoritative list comes from `GET /oauth/scopes`, and scope names correspond to API token
-permission names.
+Scopes: select at least one; the ids to select are exactly what `flareadm auth scopes` prints (the
+live `GET /oauth/scopes` list). Selected scopes are required by default and can be marked optional,
+and optional scopes may be declined on the consent screen. Of the protocol scopes, **`offline_access`
+is the only one FlareADM requests** — it is what makes the server issue a refresh token — while
+`openid` and `offline` are never sent, because the authorize endpoint rejects them with
+`error=invalid_scope` ("The OAuth 2.0 Client is not allowed to request scope 'openid'"), measured
+against the live endpoint on 2026-09-14. Scope names correspond to API token permission names.
 
 The dashboard extras above — Client URL, logo and DNS verification — are needed only if you ever
 want a public client; to use OAuth at all you only need the client id, which the CLI takes from

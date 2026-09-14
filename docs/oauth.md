@@ -1,6 +1,6 @@
 # OAuth login for FlareADM
 
-**Status: implemented (Phases 1-4) in the v1.1 line; Phase 0 (live scope verification) completed 2026-09-13 — the catalog is generated from the live 385-id list.** FlareADM
+**Status: implemented (Phases 1-4) in the v1.1 line; Phase 0 (live scope verification) completed 2026-09-13 — the catalog is generated from the live 385-id list. The first live login attempt (2026-09-14) found the authorize endpoint rejecting `openid`/`offline` with `error=invalid_scope`; the flow now requests `offline_access` alone, and every remediation example uses live ids.** FlareADM
 authenticates with Cloudflare API tokens and additionally supports a stored OAuth credential
 obtained with `flareadm auth login` (see `docs/configuration.md`); environment variables still take
 precedence. The credential store, the resolution-chain fallback, the PKCE loopback flow with
@@ -176,9 +176,14 @@ curl -X POST "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/oauth_cl
   -H "Authorization: Bearer $API_TOKEN" \
   -d '{"client_name":"...","grant_types":["authorization_code"],
        "redirect_uris":["https://example.com/oauth/callback"],
-       "scopes":["workers-platform.read","workers-platform.write"],
+       "scopes":["zone.read","dns.read","offline_access"],
        "response_types":["code"],"token_endpoint_auth_method":"client_secret_basic"}'
 ```
+
+(The `scopes` array takes live ids: `flareadm auth scopes --json` prints exactly the set the CLI
+validates `--scopes` against, and what is registered here is what the login may request. The ids
+above are examples from that list.)
+
 (E1)
 
 **Self-serve for an individual account holder:** yes, with one caveat. The role requirement is
@@ -210,8 +215,9 @@ Documented behaviour (E4) and implementation (E7–E11):
   in combination with `--device` (E4).
 - **Browser**: opened by default; `--browser=false` prints the URL instead (E4).
 - **Scopes**: `--scopes-list` prints available scopes with descriptions; `--scopes` selects a
-  whitespace-separated set (example in the docs: `account:read user:read`); **with no flags
-  `wrangler login` requests all available scopes** (E4).
+  whitespace-separated set — the docs' example uses the colon syntax `account:read user:read`, which
+  is *not* a live id and is rejected by FlareADM's validator (live ids look like `zone.read,dns.read`);
+  **with no flags `wrangler login` requests all available scopes** (E4).
 - **Device flow**: `wrangler login --device` uses the RFC 8628 Device Authorization Grant,
   prints `https://dash.cloudflare.com/oauth2/device` plus a user code, opens the URL pre-filled,
   and polls for at most **5 minutes** (or less if the server sets a shorter expiry) (E4, E5).
@@ -263,9 +269,13 @@ Sources: E4, E5, E7, E8, E9, E10, E11.
   lifetime.
 - **Refresh tokens**: `refresh_token` is included in the discovery document's
   `grant_types_supported` (E3), requested via the `offline_access` scope (E7), and used by Wrangler
-  (E8). The `cf` scope catalog additionally keeps the non-standard `offline` alias because "the
-  Cloudflare OAuth server requires it alongside `offline_access`" (E12) — FlareADM should request
-  the same pair.
+  (E8). E12 (the `cf` scope catalog) claims the server also needs the non-standard `offline` alias
+  alongside `offline_access`. **Measured 2026-09-14 against the live authorize endpoint: that claim
+  is false for this client type** — a request carrying `openid` or `offline` is answered with HTTP
+  303 to the loopback callback and `error=invalid_scope` ("The OAuth 2.0 Client is not allowed to
+  request scope 'openid'"), while the same request with `offline_access` alone is accepted (302 to
+  the login hand-off). FlareADM therefore requests `offline_access` only
+  (`oauth.RequiredScopes`, `internal/oauth/flow.go`).
 - **Rotation**: rotation is possible and handled: Wrangler re-reads the stored refresh token before
   every refresh, treats a returned `refresh_token` as a replacement, and keeps the old one when the
   server omits it (E8). `[INFERENCE]` rotation is server-policy, not client-chosen; FlareADM must
@@ -325,48 +335,27 @@ Scope properties:
 
 - Scopes are selected **when the client is created**; each is required by default and can be
   marked optional, and optional scopes may be declined by the user on the consent screen (E1).
-- The `cf` catalog notes the server needs the non-standard `offline` alias next to
-  `offline_access` (E12).
+- The `cf` catalog claims the server needs the non-standard `offline` alias next to
+  `offline_access` (E12). **Rebutted by measurement (2026-09-14):** the live authorize endpoint
+  rejects both `offline` and `openid` with `error=invalid_scope` for a client that is registered for
+  `offline_access`, and accepts `offline_access` on its own.
 - Whether the authorize request may ask for a **subset** of the registered scopes, or for scopes
   that were never registered, is **not documented**. Wrangler passes a caller-chosen scope list to
   the authorize URL (E7, E9), and its docs describe choosing scopes at login (E4) → `[INFERENCE]`
   subsetting registered scopes works; asking for unregistered scopes is unlikely to be granted.
   Verify before promising `--scopes`.
 
-Mapping to FlareADM's 320 commands (candidate = a scope with that name exists in `cf`'s catalog;
-**unknown** = no public evidence that a scope exists):
+The per-group mapping is **not duplicated here** — it ships as `scopeGroups` in
+`cmd/auth/scopes.go`, where every id is checked against the live list
+(`TestScopeCatalogIDsExistLive`), and `flareadm auth scopes` prints it (`--read-only`, `--all`,
+`--category`, `--json`). The pre-0.4 colon-delimited candidate table that used to be here is
+superseded: those names are not live ids and cannot be requested.
 
-| FlareADM group | Candidate scope(s) from E12 | Status |
-| -------------- | --------------------------- | ------ |
-| `account`, `profile` (account list/get) | `account:read` | candidate |
-| `zone` | `zone:read` | candidate |
-| `dns record` | `dns_records:read`, `dns_records:edit` | candidate |
-| `dns dnssec` | `dns_settings:read` (write scope not in catalog) | write **unknown** |
-| `ssl`, `certificate` | `ssl_certs:write` (no read scope in catalog) | read **unknown** |
-| `ruleset`, `waf`, `cache rule`, `redirect rule`, `page-rule` | none visible | **unknown** |
-| `r2 bucket` | `r2_catalog:write` is not bucket administration | **unknown** |
-| `kv` | `workers_kv:write` (read scope not in catalog) | read **unknown** |
-| `d1` | `d1:write` (read scope not in catalog) | read **unknown** |
-| `queue` | `queues:write` (read scope not in catalog) | read **unknown** |
-| `hyperdrive` | none visible | **unknown** |
-| `vectorize` | `vectorize:write` | candidate |
-| `workers` (scripts, deployments, routes, KV, observability, tail) | `workers:read`, `workers:write`, `workers_scripts:write`, `workers_routes:write`, `workers_deployments:read`, `workers_kv:write`, `workers_observability:*`, `workers_tail:read` | candidate (deployment **write** unknown) |
-| `pages` | `pages:read`, `pages:write` | candidate |
-| `logpush` | `logpush:read`, `logpush:write` | candidate |
-| `healthcheck` | none visible (health checks are zone-scoped) | **unknown** |
-| `load-balancer` | `lb:read`, `lb:edit` | candidate |
-| `notifications` | `notification:read`, `notification:write` | candidate |
-| `audit-log` | `auditlogs:read` | candidate |
-| `analytics` (REST analytics query) | none visible | **unknown** |
-| `logs query` (Log Explorer SQL) | none visible | **unknown** |
-| `zero-trust` (tunnel, access, gateway, device, organization) | `access:read`, `access:write`, `teams:read`, `teams:write`, `teams:secure_location`, `teams:pii`, `cfone:read`, `cfone:write`, `dex:*` | candidate |
-| `registrar` | `registrar:read`, `registrar:write` | candidate |
-
-**Consequence for the design:** the scope set cannot be frozen from public sources. Phase 0 of the
-implementation must record the authoritative list from `GET /oauth/scopes` on a scratch account and
-resolve every **unknown** row above. Until then, the safe default is to request the candidate
-superset that `cf` registers (E12) plus `openid`, `offline`, `offline_access`, and to expose
-`--scopes` for users who want less.
+**Consequence for the design (resolved).** The scope set cannot be frozen from public sources, so
+Phase 0 recorded the authoritative list from `GET /oauth/scopes` (§5 Q5, 385 ids) and the CLI
+requests **live ids only, plus `offline_access`**. `openid` and `offline` must not be sent: the live
+authorize endpoint answers `error=invalid_scope` for them (measured 2026-09-14). `--scopes` accepts
+any live id.
 
 Whether scopes are per-account: the consent grant is made to a client by a user, and private
 clients are limited to members of the parent account (E1); scope names themselves are global. →
@@ -465,8 +454,8 @@ flareadm auth login [--profile NAME] [--client-id ID]
 | `--profile` | store the credential under this profile; the active profile when omitted | active profile |
 | `--client-id` | OAuth client id; falls back to the profile key `oauth_client_id` | none — required (see §2) |
 | `--scopes` | comma-separated scope list to request; must be a subset of the client's registered scopes (E1/E4) | `--read-only` set |
-| `--all-scopes` | request the full candidate superset (§5 Q5) | off |
-| `--read-only` | request only read scopes from the candidate set; a write command then fails with exit 4 | on by default `[INFERENCE — see §13 Q3]` |
+| `--all-scopes` | request the 39-id catalog this CLI maps onto its command groups (§5 Q5) | off |
+| `--read-only` | request only the read half of that catalog; a write command then fails with exit 4 | on by default `[INFERENCE — see §13 Q3]` |
 | `--callback-host`, `--callback-port` | loopback listener; the resulting `redirect_uri` must be registered on the client (E4, E11) | `127.0.0.1`, `8976` |
 | `--no-browser` | print the authorize URL instead of opening a browser (E4) | browser opens |
 | `--timeout` | how long to wait for the callback before giving up | 5 min (same as Wrangler's device polling, E4) |
@@ -549,7 +538,7 @@ JSON object (versioned so the shape can evolve):
   "access_token": "…",
   "refresh_token": "…",
   "expires_at": "2026-09-11T12:34:56Z",
-  "scopes": ["account:read", "…"],
+  "scopes": ["zone.read", "dns.read", "…"],
   "obtained_at": "2026-09-11T11:34:56Z"
 }
 ```

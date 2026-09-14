@@ -392,9 +392,10 @@ List the OAuth scope ids that `flareadm auth login` can request.
 These are the values to put in the `scopes` array when creating the OAuth
 client in the Cloudflare dashboard (Manage Account > OAuth clients), and the
 same dot-delimited strings the login sends in the authorize request:
-registering a scope here is what makes it requestable. The three protocol
-scopes (openid, offline, offline_access) are added by the login itself and
-are not listed.
+registering a scope here is what makes it requestable. The protocol scope
+`offline_access` is added by the login itself (it is what makes the server
+issue a refresh token) and is not listed; the OIDC `openid`/`offline` scopes
+are rejected by Cloudflare for this client type and are never requested.
 
 The DEFAULT column marks the set the login requests when no scope flag is
 given (`--read-only` is the default for `auth login`); rows without it are
