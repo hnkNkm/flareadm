@@ -233,6 +233,13 @@ maps to its command groups. It adds `auth scopes` to print the catalog, and `aut
 to the account-scoped `GET /accounts/{account_id}/tokens/verify` for account-owned tokens, reporting
 `ID STATUS EXPIRES SCOPE`. No API or flag changes.
 
+Live login verified end to end (2026-09-14): PKCE + loopback consent in a real browser, the
+credential stored at `oauth/default.json` (0600), `auth status` reporting `oauth:default`,
+`auth verify` returning the identity via `GET /user`, and `account list`/`zone list` answered
+through the stored credential — 17/17 requested scopes granted, no refresh needed while fresh.
+Caveat recorded for that account: its client is not registered for `cloudforce-one.read` (part of
+the default read-only catalog), so a login without an explicit `--scopes` list is rejected.
+
 Delivered:
 
 - `auth login` / `auth logout` / `auth status`, plus `auth verify` for OAuth credentials;
